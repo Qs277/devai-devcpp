@@ -1858,6 +1858,8 @@ static void layout(void)
     /* 代码真实右边界：像素测量和文本估算取大的，宁可靠右一点 */
     codeR = g_inkRight > 0 ? g_inkRight : 0;
     inkR = textInkRight();
+    /* 文件里有比屏幕还长的行时，文本估算会出界，这时只信像素测量 */
+    if (inkR > limitR - S(40)) inkR = 0;
     if (inkR > codeR) codeR = inkR;
     if (codeR <= 0) codeR = g_codeX0 > 0 ? g_codeX0 + S(160) : S(300);
     if (codeR > limitR - S(30)) codeR = limitR - S(30);
