@@ -1183,47 +1183,6 @@ static long textSig(void)
   return s;
 }
 
-/* 编译器报的“第 col 列”（1 起，tab 按 8 列推进，跟 gcc 一致）
-   对应到编辑器里是第几个“可视列”（编辑器 tab 按 4 列展开、GBK 双字节算 2 列）。
-   两个 tab 宽度不一样，所以不能直接拿列号当可视列用，必须先把每个字符
-   在编译器的列号算出来，找到那个字符，再数它在编辑器里占几列。 */
-static int visualColBefore(int line, int col)
-{
-  static int off[4096];
-  int lc, s, e, i, gcol = 1, vc = 0;
-  if (line < 1 || col < 1 || g_editTextLen <= 0) return -1;
-  lc = textLineCount(off, 4096);
-  if (line > lc) return -1;
-  s = off[line - 1];
-  e = (line < lc) ? off[line] : g_editTextLen;
-  for (i = s; i < e && gcol < col; i++) {
-    unsigned char ch = (unsigned char)g_editText[i];
-    if (ch == '\t') {
-      gcol = ((gcol - 1) / 8 + 1) * 8 + 1;
-      vc += 4 - (vc % 4);
-    } else if (ch >= 0x81 && ch < 0xFF && i + 1 < e) {
-      gcol += 2; vc += 2; i++;
-    } else {
-      gcol += 1; vc += 1;
-    }
-  }
-  return vc;
-}
-
-/* 这一行开头缩进的“可视列数”（空格/tab 展开） */
-static int lineIndentVisual(int line)
-{
-  static int off[4096];
-  int lc, s, e, vi = 0;
-  if (line < 1 || g_editTextLen <= 0) return 0;
-  lc = textLineCount(off, 4096);
-  if (line > lc) return 0;
-  s = off[line - 1];
-  e = (line < lc) ? off[line] : g_editTextLen;
-  lineVisual(s, e, &vi);
-  return vi;
-}
-
 static int g_capFallback = 0;
 
 static int captureEditor(void)
@@ -1454,39 +1413,6 @@ static void renderBand(void)
       cvFill(&c, bx, bandY, S(14), bandH, 176, 52, 60, 55);
       cvFill(&c, bx, bandY + bandH - S(2), S(14), S(2), 176, 52, 60, 190);
       xl = bx;
-    }
-
-    /* 出错的那一列：橙色下划线 + 小三角，写在文字下方的空隙里，不盖字 */
-    {
-      int cw = g_charW > 0 ? g_charW : S(8);
-      int px = -1;
-      if (gd.col > 0) {
-        int vc = visualColBefore(line, gd.col);
-        int ind = lineIndentVisual(line);
-        if (vc >= 0) {
-          int bx0;
-          /* 用这一行实测的行首定基准，比拟合出来的代码原点更准 */
-          if (xl >= 0) bx0 = xl;
-          else bx0 = (g_codeX0 > 0 ? g_codeX0 : S(52)) + ind * cw;
-          if (vc < ind) vc = ind;
-          px = bx0 + (vc - ind) * cw;
-        }
-      } else {
-        px = xl;
-      }
-      if (px < S(2)) px = S(2);
-      if (xl >= 0 && px < xl) px = xl;
-      if (px + cw > w - S(2)) px = w - S(2) - cw;
-      if (px >= S(2)) {
-        int cxp = px + cw / 2, i;
-        /* 橙色下划线：抬到红线上方，加粗，避免和红线糊在一起 */
-        cvFill(&c, px, bandY + bandH - S(6), cw, S(4), 240, 108, 30, 255);
-        /* 线下方一个小三角，画在行间空隙里，一眼看出是这一列 */
-        for (i = 0; i < S(5); i++) {
-          int half = S(5) - i;
-          cvFill(&c, cxp - half, bandY + bandH + i, half * 2 + 1, 1, 240, 108, 30, 240);
-        }
-      }
     }
   }
 
