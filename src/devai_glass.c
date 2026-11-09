@@ -821,11 +821,11 @@ static int locateWindows(void)
 
 static int readDpr(void)
 {
+  static DWORD last = 0;
+  static int cached = 0;
   WCHAR path[MAX_PATH];
   char raw[32] = {0};
   HANDLE f;
-  static DWORD last = 0;
-  static int cached = 0;
   /* dpr 基本不会变，3 秒读一次足够，没必要每轮都开文件 */
   if (cached && GetTickCount() - last < 3000) return 1;
   last = GetTickCount();
@@ -1146,10 +1146,10 @@ static LRESULT CALLBACK KeyHookProc(int code, WPARAM wp, LPARAM lp)
   return CallNextHookEx(g_keyHook, code, wp, lp);
 }
 
-/* 钩子必须装在一个“一直在泵消息”的线程上。
-   以前挂在主线程，主线程每轮要枚举窗口/抓屏/读文件，还 Sleep，
-   系统派给低层钩子的每个键鼠事件都得等主线程空闲才继续 —— 整台机器
-   的鼠标键盘都跟着卡。现在单独开一条线程，只跑 GetMessage。 */
+/* 钩子必须装在一个“一直在泵消息”的线程上。挂在主线程时，主线程每轮
+   要枚举窗口/抓屏/读文件还 Sleep，系统派给低层钩子的每个键鼠事件都得
+   等它空闲才继续 —— 整台机器的鼠标键盘都跟着卡。这里单独开一条只跑
+   GetMessage 的线程。 */
 static DWORD WINAPI hookThread(LPVOID unused)
 {
   MSG m;
@@ -1389,36 +1389,23 @@ static int readTopLine(void)
 /* ------------------------------------------------------------------ 绘制：编辑区玻璃 */
 
 static int g_bandLineY = -1, g_bandLineH = 0;
-static int g_bandWinY = 0, g_bandWinH = 0;   /* 色带窗口只覆盖这一行，别整块编辑区 */
 
 static void renderBand(void)
 {
   Canvas c;
-  int w = g_edR - g_edL;
-  int bh = g_bandWinH;
-  int oy = g_bandWinY;
+  int w = g_edR - g_edL, h = g_edB - g_edT;
   int line = gd.line;
   int bandY, bandH;
 
-  if (line <= 0 || g_bandLineY < 0) { hideWindow(g_hBand); return; }
-  if (w < 40 || bh < S(10)) return;
-  if (!cvCreate(&c, w, bh)) return;
+  if (w < 40 || h < 40) return;
+  if (!cvCreate(&c, w, h)) return;
 
   if (line > 0 && g_bandLineY >= 0) {
     int xl = -1, xr = -1;
-    bandY = g_bandLineY - oy;
+    bandY = g_bandLineY;
     bandH = g_bandLineH;
-    /* 只标“有代码的那一段”，右边空白不涂。
-       扫描时用这一行真实的文字上下沿（色带本身比文字高一点，
-       直接按色带扫会把上一行/下一行的字也算进来，色带就拖得太长）。 */
-    {
-      int iy = g_bandLineY, ih = g_bandLineH;
-      if (g_targetRowTop >= 0 && g_targetRowBot > g_targetRowTop) {
-        iy = g_targetRowTop;
-        ih = (g_targetRowBot - g_targetRowTop) + 1;
-      }
-      rowInkRange(iy, ih, &xl, &xr, NULL);
-    }
+    /* 只标“有代码的那一段”，右边空白不涂 */
+    rowInkRange(bandY, bandH, &xl, &xr, NULL);
 
     /* 行号栏里竖一条小红条：不压代码，又能一眼看到是哪一行 */
     {
@@ -1454,14 +1441,12 @@ static void renderBand(void)
         int vc = visualColBefore(line, gd.col);
         int ind = lineIndentVisual(line);
         if (vc >= 0) {
+          int bx0;
+          /* 用这一行实测的行首定基准，比拟合出来的代码原点更准 */
+          if (xl >= 0) bx0 = xl;
+          else bx0 = (g_codeX0 > 0 ? g_codeX0 : S(52)) + ind * cw;
           if (vc < ind) vc = ind;
-          /* 编译器的列号常落在“出问题的那个字符右边一格”（caret 打在
-             token 末尾），实测标记整体偏右一个字符，这里往左收一格 */
-          if (vc > ind) vc--;
-          /* 用拟合出来的代码原点算列位置。不能拿这一行的行首墨迹当基准：
-             行号栏右边那个折叠方块也在这行的墨迹里，会把基准带偏 2 个字符。 */
-          if (g_codeX0 > 0) px = g_codeX0 + vc * cw;
-          else if (xl >= 0) px = xl + (vc - ind) * cw;
+          px = bx0 + (vc - ind) * cw;
         }
       } else {
         px = xl;
@@ -1482,7 +1467,7 @@ static void renderBand(void)
     }
   }
 
-  present(&c, g_hBand, g_edL, g_edT + oy);
+  present(&c, g_hBand, g_edL, g_edT);
   cvFree(&c);
 }
 
@@ -1847,20 +1832,6 @@ static void layout(void)
     }
   }
 
-  /* 色带窗口只覆盖这一行（原来是整个编辑区，2000x1200 的分层窗口
-     每次更新要上传 10MB，DWM 还要合成整块 —— 开着就卡） */
-  if (g_bandLineY >= 0) {
-    int oy = g_bandLineY - S(6);
-    int hh = g_bandLineH + S(14);
-    if (oy < 0) oy = 0;
-    if (oy + hh > edH) hh = edH - oy;
-    g_bandWinY = oy;
-    g_bandWinH = hh;
-  } else {
-    g_bandWinY = 0;
-    g_bandWinH = 0;
-  }
-
   /* 右侧信息栏：提示条在上、讲解卡在下。
      右边放不下就整块挪到代码最后一行下面，任何情况下都不压代码。 */
   {
@@ -1928,16 +1899,15 @@ static void layout(void)
 
 static void writeAlive(void)
 {
-  HANDLE f;
-  DWORD w = 0;
   /* 心跳 1 秒一次就够，原来每轮都写，主循环 5 次/秒全是磁盘操作 */
   static DWORD last = 0;
   DWORD now = GetTickCount();
   if (last && now - last < 900) return;
   last = now;
-  f = CreateFileW(gAlivePath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                  NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  HANDLE f = CreateFileW(gAlivePath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                         NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
   if (f == INVALID_HANDLE_VALUE) return;
+  DWORD w = 0;
   WriteFile(f, "1", 1, &w, NULL);
   CloseHandle(f);
 }
@@ -2158,7 +2128,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
         hideWindow(g_hBand);
         hideWindow(g_hCard);
       } else {
-        if (gd.line > 0 && g_bandLineY >= 0) renderBand(); else hideWindow(g_hBand);
+        if (gd.line > 0) renderBand(); else hideWindow(g_hBand);
         renderCard();
       }
       renderStrip();
@@ -2176,7 +2146,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       lastDrawn = 1;
     } else if (lastDrawn) {
       /* 只跟随窗口移动 */
-      SetWindowPos(g_hBand, HWND_TOPMOST, edL, edT + g_bandWinY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+      SetWindowPos(g_hBand, HWND_TOPMOST, edL, edT, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
       SetWindowPos(g_hStrip, HWND_TOPMOST, g_stripX, g_stripY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
       SetWindowPos(g_hCard, HWND_TOPMOST, g_cardX, g_cardY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
     }
