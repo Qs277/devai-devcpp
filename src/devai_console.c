@@ -205,6 +205,42 @@ static void write_run_event(DWORD code, double secs, const char *cmd, const char
     fclose(f);
 }
 
+/* Dev-C++ 是最大化窗口，程序的控制台会开在它后面，用户看到的只是“运行之后什么也没出来”。
+   这里把控制台窗口抬到最前（Windows 10 老控制台 / Windows 11 Terminal 都适用）。 */
+static void console_to_front(const char *title)
+{
+    WCHAR wtitle[MAX_PATH];
+    HWND h = NULL, fg;
+    DWORD ft, mt;
+    int i;
+
+    MultiByteToWideChar(CP_ACP, 0, title, -1, wtitle, MAX_PATH);
+    for (i = 0; i < 30; i++) {
+        h = FindWindowW(NULL, wtitle);
+        if (!h) h = GetConsoleWindow();
+        if (h && IsWindowVisible(h) && !IsIconic(h)) break;
+        Sleep(100);
+        h = NULL;
+    }
+    if (!h) return;
+
+    if (IsIconic(h)) ShowWindow(h, SW_RESTORE);
+    ShowWindow(h, SW_SHOW);
+    /* Dev-C++ 运行时会把自己藏起来，前台会落到别的置顶窗口（比如助手面板）上，
+       所以多盯一秒，看到控制台没在前台就再抬一次 */
+    for (i = 0; i < 15; i++) {
+        if (GetForegroundWindow() == h) break;
+        fg = GetForegroundWindow();
+        ft = fg ? GetWindowThreadProcessId(fg, NULL) : 0;
+        mt = GetCurrentThreadId();
+        if (ft && ft != mt) AttachThreadInput(mt, ft, TRUE);
+        SetForegroundWindow(h);
+        BringWindowToTop(h);
+        if (ft && ft != mt) AttachThreadInput(mt, ft, FALSE);
+        Sleep(100);
+    }
+}
+
 int main(int argc, char **argv)
 {
     char command[MAX_COMMAND_LENGTH];
@@ -252,6 +288,7 @@ int main(int argc, char **argv)
         return 1;
     }
     CloseHandle(pi.hThread);
+    console_to_front(argv[1]);
     WaitForSingleObject(pi.hProcess, INFINITE);
 
     ret = 0;

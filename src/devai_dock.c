@@ -415,6 +415,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, PWSTR cmd, int show)
     int  seenMode[8] = {0};
     int  everFound = 0;
     DWORD goneAt = 0;
+    DWORD hostGoneAt = 0;
     long raiseSeen = 0;
 
     for (;;) {
@@ -455,12 +456,20 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, PWSTR cmd, int show)
         /* Chromium 冷启动时会把 --app 窗口先建成隐藏的，不替它显示就永远看不见 */
         host = findHost();
         if (!host || !IsWindow(host)) {
-            /* 浮窗是独立窗口，Dev-C++ 暂时找不到也不影响它显示 */
+            /* 启动器里面板比 Dev-C++ 先起来是常态：先按浮窗显示，
+               等宿主窗口出现再贴到右边（以前这里直接退出，所以面板一直不显示） */
             if (want == 1) {
-                logline(L"[dock] host gone, exit");
-                break;
+                if (nvis == 0) makeFloat(gPanelList[0], NULL);
+                if (!hostGoneAt) hostGoneAt = GetTickCount();
+                if (GetTickCount() - hostGoneAt > 180000) {
+                    logline(L"[dock] host never appeared, exit");
+                    break;
+                }
+                Sleep(220);
+                continue;
             }
         }
+        hostGoneAt = 0;
 
         if (nvis == 0) {
             if (want == 2) makeFloat(gPanelList[0], host);

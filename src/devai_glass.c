@@ -48,7 +48,7 @@ static int g_pitch;        /* 行高（像素） */
 static int g_firstTextY;   /* 编辑区第一行文字的 y（相对编辑区） */
 static int g_topLine = 1;  /* 当前第一可见行 */
 
-static int g_collapsed = 1;   /* 默认折叠，只留一条小提示 */
+static int g_collapsed = 0;   /* 默认展开，错误原因直接看全 */
 static int g_cardHidden = 0;
 static int g_userDX = 0, g_userDY = 0;
 static int g_needDraw = 1;
@@ -1219,7 +1219,9 @@ static void measureLines(void)
   x0 = S(70);
   if (x0 > sw - 60) x0 = 0;
   limR = w - S(40);
-  if (g_panelL > g_edL && g_panelL - g_edL - S(4) < limR) limR = g_panelL - g_edL - S(4);
+  /* 助手面板浮在编辑区右边，它的边框+阴影有上百像素宽，会被误当成“代码墨迹”，
+     把提示条/讲解卡顶到最左边压在代码上 —— 这里多让开一段 */
+  if (g_panelL > g_edL && g_panelL - g_edL - S(110) < limR) limR = g_panelL - g_edL - S(110);
   if (limR < sw + S(20)) limR = w - S(40);
 
   /* 背景色：取出现次数最多的颜色，避免取到滚动条或别的窗口 */
@@ -1306,7 +1308,8 @@ static void measureLines(void)
       }
       /* 每一行都有墨 = 行号栏分隔线/滚动条，不是文字 */
       if (count >= 3 && hitRows * 4 >= count * 3 && x < 8192) g_vertCol[x] = 1;
-      if (hitRows >= 2 && hitRows < count && x > cRight) cRight = x;
+      /* 超过 3/4 的行都有墨的竖带也不是文字（面板阴影、边框） */
+      if (hitRows >= 2 && hitRows * 4 < count * 3 && x > cRight) cRight = x;
     }
     if (cRight > 0) inkRight = cRight;
   }
@@ -1468,6 +1471,76 @@ static void renderCollapsed(void)
   cvFree(&c);
 }
 
+/* 成功结果卡：编译通过 / 运行结束（用户要的“玻璃板上面那块运行结果”） */
+static void renderOkCard(void)
+{
+  Canvas c;
+  int W = g_colW > 0 ? g_colW : S(300), P = S(9);
+  int hH = S(30);
+  int lineHBody = textLineH(g_measureDC, g_fBody);
+  int lineHHead = textLineH(g_measureDC, g_fHead);
+  int lineHSmall = textLineH(g_measureDC, g_fSmall);
+  WCHAR lines[8][1024];
+  WCHAR head[220], tips[400];
+  int nBody, nTips = 0, i, y, total;
+
+  nBody = wrapLines(g_measureDC, g_fBody, gd.cause, W - P * 2, &lines[0][0], 1024, 3, 240);
+  if (nBody < 1) nBody = 1;
+  tips[0] = 0;
+  if (gd.tips[0] && jsonArrAt(g_glassDoc, "tips", 0, tips, 400) && tips[0]) {
+    WCHAR one[300];
+    WCHAR merged[400];
+    wcsncpy(merged, tips, 380); merged[380] = 0;
+    if (jsonArrAt(g_glassDoc, "tips", 1, one, 300) && one[0]) {
+      wcsncat(merged, L" · ", 390 - (int)wcslen(merged));
+      wcsncat(merged, one, 390 - (int)wcslen(merged));
+    }
+    wcsncpy(tips, merged, 399); tips[399] = 0;
+    nTips = wrapLines(g_measureDC, g_fBody, tips, W - P * 2, &lines[0][0], 1024, 2, 240);
+  }
+
+  total = hH + P + nBody * lineHBody + (nTips ? lineHSmall + nTips * lineHBody : 0) + P;
+  if (!cvCreate(&c, W, total)) return;
+
+  cvFill(&c, 0, 0, W, total, 255, 253, 248, 244);
+  cvRect(&c, 0, 0, W, total, 34, 38, 42, 255);
+  cvFill(&c, 1, 1, W - 2, hH - 1, 236, 246, 238, 250);       /* 淡绿标题栏 */
+  cvFill(&c, 1, hH - 1, W - 2, S(2), 34, 38, 42, 255);
+  cvFill(&c, 0, 0, S(3), total, 46, 140, 92, 255);            /* 左侧绿边 */
+
+  {
+    const WCHAR *t = gd.title[0] ? gd.title : L"运行结果";
+    int hw;
+    _snwprintf(head, 200, L"小D · %s", t);
+    head[200] = 0;
+    hw = textW(c.hdc, g_fHead, head);
+    if (hw > W - S(50)) {
+      WCHAR ell[220];
+      copyEllipsis(c.hdc, g_fHead, head, W - S(56), ell, 220);
+      drawTextAt(&c, c.hdc, P, (hH - lineHHead) / 2 + S(2), ell, g_fHead, 30, 80, 52, 255);
+    } else {
+      drawTextAt(&c, c.hdc, P, (hH - lineHHead) / 2 + S(2), head, g_fHead, 30, 80, 52, 255);
+    }
+    cvChevron(&c, W - S(20), (hH - S(8)) / 2, S(4), 1, 105, 111, 118, 255);
+  }
+  g_cardHeadH = hH;
+
+  y = hH + P;
+  for (i = 0; i < nBody; i++) {
+    drawTextAt(&c, c.hdc, P, y, lines[i], g_fBody, 34, 38, 42, 255);
+    y += lineHBody;
+  }
+  if (nTips) {
+    y += S(2);
+    for (i = 0; i < nTips; i++) {
+      drawTextAt(&c, c.hdc, P, y, lines[i], g_fSmall, 76, 96, 84, 255);
+      y += lineHBody;
+    }
+  }
+  present(&c, g_hCard, g_cardX, g_cardY);
+  cvFree(&c);
+}
+
 static void renderCard(void)
 {
   Canvas c;
@@ -1479,8 +1552,9 @@ static void renderCard(void)
   int lineHBody, lineHHead, lineHSmall, lineHMono;
   RECT headRect;
 
-  if (!gd.on || gd.ok || !wcscmp(gd.kind, L"busy") || g_cardHidden) { hideWindow(g_hCard); return; }
+  if (!gd.on || !wcscmp(gd.kind, L"busy") || g_cardHidden) { hideWindow(g_hCard); return; }
   if (g_collapsed) { renderCollapsed(); return; }
+  if (gd.ok) { renderOkCard(); return; }
   if (capH > S(320)) capH = S(320);
 
   lineHHead = textLineH(g_measureDC, g_fHead);
@@ -1788,7 +1862,7 @@ static void layout(void)
     int baseX, stripH, cardH, codeR, inkR, avail, colW;
 
     if (g_panelL > g_edL) {
-      int pl = g_panelL - g_edL - S(10);
+      int pl = g_panelL - g_edL - S(110);
       if (pl > S(120) && pl < limitR) limitR = pl;
     }
 
@@ -1841,6 +1915,18 @@ static void layout(void)
       if (g_cardX + g_colW > g_edL + limitR) g_cardX = g_edL + limitR - g_colW;
       if (g_cardX < g_edL + S(4)) g_cardX = g_edL + S(4);
     }
+    {
+      static int lastLog[6] = {-1,-1,-1,-1,-1,-1};
+      int now[6] = { (int)codeR, baseX, colW, anchorY, stripH, g_panelL };
+      int k, diff = 0;
+      for (k = 0; k < 6; k++) if (now[k] != lastLog[k]) diff = 1;
+      if (diff) {
+        for (k = 0; k < 6; k++) lastLog[k] = now[k];
+        glog(L"layout ed=%dx%d line=%d top=%d rel=%d codeR=%d baseX=%d colW=%d anchorY=%d stripH=%d panelL=%d card=%d,%d",
+             edW, edH, line, g_topLine, line - g_topLine, codeR, baseX, colW, anchorY, stripH, g_panelL,
+             g_cardX, g_cardY);
+      }
+    }
   }
 }
 
@@ -1866,6 +1952,28 @@ static void hideAll(void)
   hideWindow(g_hBand);
   hideWindow(g_hStrip);
   hideWindow(g_hCard);
+}
+
+/* Dev-C++ 正在运行程序时标题会带 [Executing]：这时控制台窗口会盖住编辑区，
+   不能再去抓屏测量（抓到的全是控制台画面），但玻璃要留在原地继续显示 */
+static int hostExecuting(void)
+{
+  WCHAR t[256];
+  if (!g_hHost || !IsWindow(g_hHost)) return 0;
+  if (!GetWindowTextW(g_hHost, t, 256)) return 0;
+  return wcsstr(t, L"[Executing]") != NULL;
+}
+
+/* 控制台窗口（Windows 10 老控制台 / Windows Terminal） */
+static int isConsoleWindow(HWND h)
+{
+  WCHAR cls[128];
+  if (!h) return 0;
+  if (!GetClassNameW(h, cls, 128)) return 0;
+  if (!_wcsicmp(cls, L"ConsoleWindowClass")) return 1;
+  if (!_wcsicmp(cls, L"CASCADIA_HOSTING_WINDOW_CLASS")) return 1;
+  if (wcsstr(cls, L"PseudoConsole")) return 1;
+  return 0;
 }
 
 static void initFonts(void)
@@ -1968,7 +2076,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
             g_needDraw = 1;
             g_forceMeasure = 1;
             g_userDX = g_userDY = 0;
-            g_collapsed = 1;   /* 每次新分析默认折叠，只弹一条小提示 */
+            g_collapsed = 0;   /* 每次新分析默认展开，不折叠 */
             g_cardHidden = 0;
             glog(L"json on=%d kind=%s ok=%d line=%d title=%s", gd.on, gd.kind, gd.ok, gd.line, gd.title);
           }
@@ -2005,6 +2113,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
     {
       HWND fg = GetForegroundWindow();
       BOOL active = 0;
+      BOOL executing = hostExecuting();
       /* Dev-C++ 主窗自己被藏起来（比如程序正在 [Executing]）时绝不能画：
          否则玻璃会浮在别的程序上面 */
       if (fg && g_hHost && IsWindowVisible(g_hHost)) {
@@ -2019,6 +2128,9 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
             if (wcsstr(t, L"DevAI")) active = 1;
             /* 系统/后台服务的隐藏窗口抢焦点时不当成“切走了”，免得玻璃乱闪 */
             else if (!IsWindowVisible(fg)) active = 1;
+            /* 运行程序时控制台会抢到前台：玻璃要留在编辑区继续显示，
+               不然一运行就全没了（用户会以为“运行界面不显示”） */
+            else if (executing && isConsoleWindow(fg)) active = 1;
           }
         }
       }
@@ -2052,6 +2164,17 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       continue;
     }
 
+    /* 编译/运行的事件丢了（比如编译器没写结束事件、AI 超时），
+       “正在编译”不能一直挂在代码上挡着 */
+    if (!wcscmp(gd.kind, L"busy") && gd.ts != 0 &&
+        (DWORD)(GetTickCount() - gd.ts) > 25000) {
+      hideAll();
+      lastDrawn = 0;
+      writeAlive();
+      Sleep(300);
+      continue;
+    }
+
     {
       /* 抓屏必须先把玻璃自己藏 70ms（否则会把自己的高亮抓进去），
          所以“重新量”一定要省。窗口被拖动/移动时内容并没有变，
@@ -2060,7 +2183,10 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       int sizeChanged = ((edR - edL) != (lastEdR - lastEdL)) ||
                         ((edB - edT) != (lastEdB - lastEdT));
       int scrolled = (top != lastTop);
-      if (sizeChanged || scrolled || g_forceMeasure || (g_needDraw && g_pitch <= 1)) {
+      /* 运行中的程序会把控制台窗口盖在编辑区上，这时抓屏量到的是控制台画面，
+         行距/右边界全都会算错 —— 运行期间只沿用上一次量好的几何 */
+      int executing = hostExecuting();
+      if (!executing && (sizeChanged || scrolled || g_forceMeasure || (g_needDraw && g_pitch <= 1))) {
         captureEditor();
         measureLines();
         g_forceMeasure = 0;
@@ -2095,7 +2221,8 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
         hideWindow(g_hBand);
         hideWindow(g_hCard);
       } else {
-        if (gd.line > 0) renderBand(); else hideWindow(g_hBand);
+        /* 程序运行中编辑区被控制台盖住，行高亮没有意义，只留提示条和讲解卡 */
+        if (gd.line > 0 && !hostExecuting()) renderBand(); else hideWindow(g_hBand);
         renderCard();
       }
       renderStrip();

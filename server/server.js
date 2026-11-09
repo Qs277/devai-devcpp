@@ -589,6 +589,10 @@ function scanQueue() {
     let evt;
     try { evt = kvParse(fs.readFileSync(path.join(QUEUE, f), 'utf8')); } catch (e) { continue; }
     try { handleEvent(evt, f); } catch (e) { console.error('[devai] handleEvent error', e); }
+    /* 事件读完就删：processed.json 只留最近 500 条，旧事件留在队列里
+       会在下次重启时被当成新事件重新分析，把玻璃数据覆盖成几百年前的老错误 */
+    try { fs.unlinkSync(path.join(QUEUE, f)); } catch (e) {}
+    if (evt.log) { try { fs.unlinkSync(evt.log); } catch (e) {} }
   }
   saveProcessed();
 }
@@ -685,7 +689,22 @@ function raisePanel() {
   } catch (e) {}
 }
 
+/* 面板的贴靠/置顶由 dock.exe 负责；它没在跑就补一个（单实例互斥，重复开也没关系） */
+function ensureDock() {
+  const dockExe = path.join(HOME, 'bin', 'devai_dock.exe');
+  if (!fs.existsSync(dockExe)) return;
+  try {
+    const dock = spawn(dockExe, [
+      '--host=DevCpp.exe',
+      '--panel=DevAI 小助手',
+      '--width=440'
+    ], { detached: true, stdio: 'ignore', windowsHide: true });
+    dock.unref();
+  } catch (e) {}
+}
+
 function openPanel(port) {
+  ensureDock();
   /* 面板已经开着：不要再开第二个，交给 dock.exe 抬到最前就行 */
   if (panelAlive()) {
     raisePanel();
