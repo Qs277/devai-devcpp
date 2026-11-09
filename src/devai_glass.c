@@ -48,11 +48,15 @@ static int g_pitch;        /* 行高（像素） */
 static int g_firstTextY;   /* 编辑区第一行文字的 y（相对编辑区） */
 static int g_topLine = 1;  /* 当前第一可见行 */
 
-static int g_collapsed = 0;
+static int g_collapsed = 1;   /* 默认折叠，只留一条小提示 */
 static int g_cardHidden = 0;
 static int g_userDX = 0, g_userDY = 0;
 static int g_needDraw = 1;
 static int g_cardX = 0, g_cardY = 0;
+static int g_cardHeadH = 0;   /* 点击标题栏才折叠/展开 */
+static int g_inkRight = 0;    /* 可见代码最右侧有字的 x（相对编辑区），卡片放它右边 */
+static int g_lastCodeY = 0;   /* 可见代码最后一行的底部（相对编辑区） */
+static int g_panelL = 0, g_panelT = 0, g_panelB = 0;  /* 小助手浮窗的位置，卡片别压它 */
 static int g_topLineSet = 1;
 static char g_glassDoc[8192];   /* 缓存 json 原文 */
 
@@ -184,6 +188,30 @@ static void cvRect(Canvas *c, int x, int y, int w, int h, int r, int g, int b, i
   cvFill(c, x, y + h - 1, w, 1, r, g, b, a);
   cvFill(c, x, y, 1, h, r, g, b, a);
   cvFill(c, x + w - 1, y, 1, h, r, g, b, a);
+}
+
+static void cvLine(Canvas *c, int x1, int y1, int x2, int y2, int r, int g, int b, int a)
+{
+  int dx = x2 - x1, dy = y2 - y1;
+  int steps = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
+  int i;
+  if (steps < 1) steps = 1;
+  for (i = 0; i <= steps; i++) {
+    cvBlend(c, x1 + dx * i / steps, y1 + dy * i / steps, r, g, b, a);
+    cvBlend(c, x1 + dx * i / steps, y1 + dy * i / steps + 1, r, g, b, a);
+  }
+}
+
+/* 自己画小三角：字体里没有 ▸/▾ 这类符号时不会变成豆腐块 */
+static void cvChevron(Canvas *c, int x, int y, int s, int down, int r, int g, int b, int a)
+{
+  if (down) {
+    cvLine(c, x, y, x + s, y + s, r, g, b, a);
+    cvLine(c, x + s, y + s, x + 2 * s, y, r, g, b, a);
+  } else {
+    cvLine(c, x, y, x + s, y + s, r, g, b, a);
+    cvLine(c, x + s, y + s, x, y + 2 * s, r, g, b, a);
+  }
 }
 
 static void cvDashedLine(Canvas *c, int x1, int y1, int x2, int y2, int r, int g, int b, int a, int dash)
@@ -389,7 +417,10 @@ static int jsonBool(const char *doc, const char *key)
 {
   const char *p = findKey(doc, key);
   if (!p) return 0;
-  return strncmp(p, "true", 4) == 0 ? 1 : 0;
+  if (!strncmp(p, "true", 4)) return 1;
+  if (!strncmp(p, "\"true\"", 6)) return 1;
+  if (*p == '1' || !strncmp(p, "\"1\"", 3)) return 1;
+  return 0;
 }
 
 /* 取数组里的第 idx 个字符串：先截出原始字节，再整体转成宽字符（避免残留串尾） */
@@ -527,8 +558,9 @@ static LRESULT CALLBACK GlassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
   case WM_LBUTTONDOWN:
     if (h == g_hCard) {
       POINT pt;
+      int headH = g_cardHeadH > 0 ? g_cardHeadH : S(24);
       pt.x = (short)LOWORD(lp); pt.y = (short)HIWORD(lp);
-      if (pt.y <= S(34)) {
+      if (pt.y <= headH) {
         GetWindowRect(h, &g_dragRect);
         GetCursorPos(&pt);
         g_dragStartX = pt.x; g_dragStartY = pt.y;
@@ -552,11 +584,15 @@ static LRESULT CALLBACK GlassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     return 0;
   case WM_LBUTTONUP:
     if (h == g_hCard && GetCapture() == h) {
+      POINT pt;
+      int headH = g_cardHeadH > 0 ? g_cardHeadH : S(24);
+      pt.x = (short)LOWORD(lp); pt.y = (short)HIWORD(lp);
       ReleaseCapture();
-      if (!g_dragging) {
-        g_collapsed = !g_collapsed;
+      if (!g_dragging && pt.y <= headH) {
+        g_collapsed = !g_collapsed;   /* 只有点标题栏/折叠条才切换 */
+        g_userDX = 0; g_userDY = 0;   /* 切换后回到自动位置 */
         g_needDraw = 1;
-      } else {
+      } else if (g_dragging) {
         g_needDraw = 1;
       }
     }
@@ -608,7 +644,11 @@ static BOOL CALLBACK enumTop(HWND h, LPARAM lp)
   GetClassNameW(h, cls, 128);
   if (!wcscmp(cls, CLASS_GLASS)) return TRUE;
   GetWindowTextW(h, title, 256);
-  if (!wcsstr(title, L"Dev-C++") && wcscmp(cls, L"TMainForm")) return TRUE;
+  if (!wcsstr(title, L"Dev-C++") && wcscmp(cls, L"TMainForm")) {
+    /* 顺手记一下小助手浮窗的位置，卡片避让它 */
+    if (wcsstr(title, L"DevAI")) { g_panelL = r.left; g_panelT = r.top; g_panelB = r.bottom; }
+    return TRUE;
+  }
   if (IsIconic(h)) return TRUE;
   if (wcsstr(title, L"DevAI")) return TRUE;
   long area = (long)(r.right - r.left) * (r.bottom - r.top);
@@ -681,6 +721,7 @@ static int locateWindows(void)
   RECT r;
   g_best = NULL;
   g_bestArea = 0;
+  g_panelL = 0; g_panelT = 0; g_panelB = 0;
   EnumWindows(enumTop, 0);
   if (!g_best) return 0;
   g_hHost = g_best;
@@ -769,7 +810,7 @@ static void measureLines(void)
   int bgR = 255, bgG = 255, bgB = 255;
   int starts[80], ends[80], count = 0;
   int thr, minH;
-  if (!g_capReady) { g_pitch = S(22); g_firstTextY = S(6); return; }
+  if (!g_capReady) { g_pitch = S(22); g_firstTextY = S(6); g_inkRight = 0; g_lastCodeY = 0; return; }
   sw = w / 2;
   if (sw < 300) sw = w;
   x0 = S(70);
@@ -803,6 +844,8 @@ static void measureLines(void)
   for (i = 0; i < 2048; i++) prof[i] = 0;
 
   int inBand = 0;
+  int inkRight = 0;   /* 右半幅里最靠右的文字像素，用来找“空白列”放卡片 */
+  int lastInk = 0;    /* 最后一小片有字的行，卡片可以放到它下面 */
   for (y = 0; y < h && count < 80; y++) {
     int cnt = 0;
     for (x = x0; x < sw; x += 2) {
@@ -812,7 +855,27 @@ static void measureLines(void)
       if (d > 240) cnt++;
     }
     if (y < hi) prof[y] = cnt;
+    /* 右半幅粗扫一遍：这一行有没有字（有就精确找最右一个） */
+    {
+      int rx, hit = 0;
+      for (rx = sw + 2; rx < w - S(40); rx += 6) {
+        unsigned int v = g_cap.px[(size_t)y * w + rx];
+        int r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
+        if (abs(r - bgR) + abs(g - bgG) + abs(b - bgB) > 240) { hit = 1; break; }
+      }
+      if (hit) {
+        for (rx = w - S(40) - 1; rx >= sw + 2; rx--) {
+          unsigned int v = g_cap.px[(size_t)y * w + rx];
+          int r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
+          if (abs(r - bgR) + abs(g - bgG) + abs(b - bgB) > 240) {
+            if (rx > inkRight) inkRight = rx;
+            break;
+          }
+        }
+      }
+    }
     if (cnt > thr) {
+      if (y > lastInk) lastInk = y;
       if (!inBand) { starts[count] = y; ends[count] = y; count++; inBand = 1; }
       else ends[count - 1] = y;
     } else {
@@ -838,7 +901,7 @@ static void measureLines(void)
     if (ends[i] - starts[i] + 1 >= minH) { starts[k] = starts[i]; ends[k] = ends[i]; k++; }
   }
   count = k;
-  if (count == 0) { g_pitch = S(22); g_firstTextY = S(6); return; }
+  if (count == 0) { g_pitch = S(22); g_firstTextY = S(6); g_inkRight = inkRight; g_lastCodeY = 0; return; }
 
   /* 行距：对行轮廓做自相关，找让“文字行对文字行”最吻合的周期（空白行不影响） */
   {
@@ -865,6 +928,8 @@ static void measureLines(void)
     g_firstTextY = bestP;
   }
   if (g_firstTextY < 0) g_firstTextY = 0;
+  g_inkRight = inkRight;
+  g_lastCodeY = (lastInk > 0) ? lastInk + S(4) : 0;
 }
 
 static int readTopLine(void)
@@ -960,18 +1025,73 @@ static void renderBand(void)
 
 /* ------------------------------------------------------------------ 绘制：讲解卡 */
 
+/* 折叠时那一行提示的文案：第几行 + 一句短的错误原因 */
+static void cardShortTitle(WCHAR *out, int cap)
+{
+  WCHAR src[200];
+  const WCHAR *s = (gd.cause[0] ? gd.cause : gd.title);
+  int i, n = 0;
+  for (i = 0; s[i] && n < 150; i++) {
+    if (s[i] == '\r') continue;
+    src[n++] = (s[i] == '\n') ? L' ' : s[i];
+  }
+  src[n] = 0;
+  if (gd.line > 0)
+    _snwprintf(out, cap, L"第 %d 行 · ", gd.line);
+  else
+    _snwprintf(out, cap, L"代码体检 · ");
+  out[cap - 1] = 0;
+  wcsncat(out, src, cap - 1 - (int)wcslen(out));
+  out[cap - 1] = 0;
+}
+
+/* 折叠条宽度：跟渲染时算的一模一样，布局才知道放哪 */
+static int collapseCardWidth(void)
+{
+  WCHAR t[220], ell[220];
+  int P = S(7);
+  cardShortTitle(t, 220);
+  copyEllipsis(g_measureDC, g_fBody, t, S(190), ell, 220);
+  return P + S(9) + textW(g_measureDC, g_fBody, ell) + S(6) + S(12) + P;
+}
+
+/* 折叠态：只有一条很窄的提示，点在它上面才展开 */
+static void renderCollapsed(void)
+{
+  Canvas c;
+  WCHAR t[220], ell[220];
+  int P = S(7), H = S(24), tw, W;
+  int lineH = textLineH(g_measureDC, g_fBody);
+  cardShortTitle(t, 220);
+  copyEllipsis(g_measureDC, g_fBody, t, S(190), ell, 220);
+  tw = textW(g_measureDC, g_fBody, ell);
+  W = P + S(9) + tw + S(6) + S(12) + P;
+  if (!cvCreate(&c, W, H)) return;
+  cvFill(&c, 0, 0, W, H, 255, 253, 248, 226);
+  cvRect(&c, 0, 0, W, H, 34, 38, 42, 190);
+  cvFill(&c, 0, 0, S(3), H, 198, 58, 58, 255);              /* 左侧红边 */
+  cvFill(&c, P, (H - S(5)) / 2, S(5), S(5), 198, 58, 58, 255); /* 小红点 */
+  drawTextAt(&c, c.hdc, P + S(9), (H - lineH) / 2 + S(1), ell, g_fBody, 34, 38, 42, 255);
+  cvChevron(&c, W - P - S(10), (H - S(8)) / 2, S(4), 0, 105, 111, 118, 255);
+  g_cardHeadH = H;
+  present(&c, g_hCard, g_cardX, g_cardY);
+  cvFree(&c);
+}
+
 static void renderCard(void)
 {
   Canvas c;
-  int W = S(352), P = S(11);
+  int W = S(300), P = S(9);
   int capH = (g_edB - g_edT) - S(16);
-  int hH = S(34);
+  int hH = S(30);
   int y, i, n, total;
   WCHAR lines[16][1024];
   int lineHBody, lineHHead, lineHSmall, lineHMono;
   RECT headRect;
 
   if (!gd.on || gd.ok || !wcscmp(gd.kind, L"busy") || g_cardHidden) { hideWindow(g_hCard); return; }
+  if (g_collapsed) { renderCollapsed(); return; }
+  if (capH > S(320)) capH = S(320);
 
   lineHHead = textLineH(g_measureDC, g_fHead);
   lineHBody = textLineH(g_measureDC, g_fBody);
@@ -1012,15 +1132,10 @@ static void renderCard(void)
     } else {
       drawTextAt(&c, c.hdc, P, (hH - lineHHead) / 2 + S(2), head, g_fHead, 34, 38, 42, 255);
     }
-    drawTextAt(&c, c.hdc, W - S(26), (hH - lineHHead) / 2 + S(2),
-               g_collapsed ? L"▸" : L"▾", g_fHead, 91, 97, 103, 255);
+    cvChevron(&c, W - S(20), (hH - S(8)) / 2, S(4), 1, 105, 111, 118, 255);
   }
 
-  if (g_collapsed) {
-    present(&c, g_hCard, g_cardX, g_cardY);
-    cvFree(&c);
-    return;
-  }
+  g_cardHeadH = hH;
 
   y = hH + P;
   /* ① 错误原因 */
@@ -1180,11 +1295,11 @@ static void renderStrip(void)
   {
     WCHAR head[500];
     if (gd.ok) {
-      wsprintfW(head, L"✓ %s", gd.title[0] ? gd.title : L"编译通过");
+      wsprintfW(head, L"[通过] %s", gd.title[0] ? gd.title : L"编译通过");
     } else if (gd.line > 0) {
-      wsprintfW(head, L"✗ %s · 第 %d 行", gd.title[0] ? gd.title : L"编译失败", gd.line);
+      wsprintfW(head, L"[错误] %s · 第 %d 行", gd.title[0] ? gd.title : L"编译失败", gd.line);
     } else {
-      wsprintfW(head, L"✗ %s", gd.title[0] ? gd.title : L"编译失败");
+      wsprintfW(head, L"[错误] %s", gd.title[0] ? gd.title : L"编译失败");
     }
     head[400] = 0;
     copyEllipsis(c.hdc, g_fHead, head, w - x - P, t1, 400);
@@ -1220,7 +1335,7 @@ static void layout(void)
 {
   int edW = g_edR - g_edL, edH = g_edB - g_edT;
   int line = gd.line;
-  int cw = S(352), ch = 0;
+  int ch = 0;
   g_bandLineY = -1; g_bandLineH = 0;
 
   if (line > 0) {
@@ -1233,14 +1348,43 @@ static void layout(void)
     }
   }
 
-  /* 卡片默认位置：小D 右边、出错行下边，不挡住出错那一行 */
+  /* 卡片位置：优先放在“没字的空白处”，实在没地方才贴着出错行右边 */
   {
-    int wantY = (g_bandLineY >= 0) ? (g_bandLineY + g_bandLineH + S(12)) : S(40);
-    int wantX = S(52);
-    if (wantX + cw > edW - S(10)) wantX = edW - cw - S(10);
-    if (wantX < S(8)) wantX = S(8);
-    if (wantY < S(8)) wantY = S(8);
-    if (wantY > edH - S(120)) wantY = edH - S(120);
+    int cw2 = g_collapsed ? collapseCardWidth() : S(300);
+    int cardH = g_collapsed ? S(24) : S(300);
+    int wantX, wantY;
+    int used = 0;
+
+    /* ① 代码最后一行下面的空白地带（左边缩进对齐，最不挡东西） */
+    if (g_lastCodeY > 0 && edH - (g_lastCodeY + S(10)) >= cardH + S(4)) {
+      wantX = S(50);
+      wantY = g_lastCodeY + S(10);
+      used = 1;
+    }
+    /* ② 可见代码右侧的空列 */
+    if (!used && g_inkRight > 0 && edW - g_inkRight - S(14) >= cw2 + S(4)) {
+      wantX = g_inkRight + S(12);
+      wantY = (g_bandLineY >= 0) ? g_bandLineY + g_bandLineH + S(8) : S(10);
+      used = 1;
+    }
+    /* ③ 贴右边缘 */
+    if (!used) {
+      wantX = edW - cw2 - S(8);
+      wantY = (g_bandLineY >= 0) ? g_bandLineY + g_bandLineH + S(8) : S(10);
+    }
+
+    /* 别压住小助手浮窗：压到就往左让 */
+    if (g_panelL > g_edL && g_panelT < g_edT + wantY + cardH && g_panelB > g_edT + wantY) {
+      int lim = (g_panelL - g_edL) - cw2 - S(8);
+      if (lim > S(4) && wantX + cw2 > lim) wantX = lim;
+    }
+
+    if (wantX + cw2 > edW - S(4)) wantX = edW - cw2 - S(4);
+    if (wantX < S(4)) wantX = S(4);
+    if (wantY < S(4)) wantY = S(4);
+    if (wantY + cardH > edH - S(4)) wantY = edH - cardH - S(4);
+    if (wantY < S(4)) wantY = S(4);
+
     g_cardX = g_edL + wantX + g_userDX;
     g_cardY = g_edT + wantY + g_userDY;
     (void)ch;
@@ -1354,7 +1498,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
             loadData();
             g_needDraw = 1;
             g_userDX = g_userDY = 0;
-            g_collapsed = 0;
+            g_collapsed = 1;   /* 每次新分析默认折叠，只弹一条小提示 */
             g_cardHidden = 0;
             glog(L"json on=%d kind=%s ok=%d line=%d title=%s", gd.on, gd.kind, gd.ok, gd.line, gd.title);
           }
