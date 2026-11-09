@@ -383,6 +383,7 @@ function glassFromAdvice(item, advice, extra) {
     level: advice.level || item.scenario || 'error',
     title: advice.title || '',
     line: advice.line || focus.line || 0,
+    col: advice.col || focus.col || 0,
     file: item.file || focus.file || state.source || '',
     name: focus.name || (item.file ? path.basename(item.file) : ''),
     cause: advice.explain || '',
