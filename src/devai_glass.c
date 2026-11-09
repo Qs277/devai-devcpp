@@ -230,19 +230,6 @@ static void cvChevron(Canvas *c, int x, int y, int s, int down, int r, int g, in
   }
 }
 
-static void cvDashedLine(Canvas *c, int x1, int y1, int x2, int y2, int r, int g, int b, int a, int dash)
-{
-  int dx = x2 - x1, dy = y2 - y1;
-  int steps = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
-  int i;
-  if (steps < 1) steps = 1;
-  for (i = 0; i <= steps; i++) {
-    if ((i / dash) % 2 == 1) continue;
-    cvBlend(c, x1 + dx * i / steps, y1 + dy * i / steps, r, g, b, a);
-    cvBlend(c, x1 + dx * i / steps, y1 + dy * i / steps + 1, r, g, b, a);
-  }
-}
-
 /* 文字：先用 GDI 画到黑白 mask，再按灰度做 alpha 合成（有抗锯齿） */
 static int textW(HDC dc, HFONT f, const WCHAR *s)
 {
@@ -1380,22 +1367,6 @@ static int readTopLine(void)
 
 static int g_bandLineY = -1, g_bandLineH = 0;
 
-static void drawRobot(Canvas *c, int x, int y, int targetX, int targetY)
-{
-  int bw = S(56), bh = S(50);
-  int inkR = 34, inkG = 38, inkB = 42;
-  int paperR = 255, paperG = 253, paperB = 245;
-  /* 身体（不再画头顶那个方块） */
-  cvFill(c, x, y, bw, bh, paperR, paperG, paperB, 247);
-  cvRect(c, x, y, bw, bh, inkR, inkG, inkB, 255);
-  /* 眼睛 */
-  cvFill(c, x + S(14), y + S(14), S(8), S(8), inkR, inkG, inkB, 255);
-  cvFill(c, x + S(34), y + S(14), S(8), S(8), inkR, inkG, inkB, 255);
-  /* 嘴 */
-  cvFill(c, x + S(19), y + S(32), S(18), S(3), inkR, inkG, inkB, 255);
-  (void)targetX; (void)targetY;
-}
-
 static void renderBand(void)
 {
   Canvas c;
@@ -1709,7 +1680,7 @@ static void renderStrip(void)
   Canvas c;
   int w = g_stripW, h = g_stripH;
   int P = S(10);
-  int y, x, tw, hHead, hBody, rx;
+  int y, x, tw, hHead, hBody;
   WCHAR t[520], head[520];
 
   if (w < 60 || h < 30) return;
@@ -1724,21 +1695,16 @@ static void renderStrip(void)
   hHead = textLineH(c.hdc, g_fHead);
   hBody = textLineH(c.hdc, g_fBody);
 
-  /* 小D 站在右侧，面朝代码 */
-  rx = w - S(8) - S(56);
-  if (rx < S(70)) rx = w - S(56) - S(2);
-  drawRobot(&c, rx, P + S(4), rx - S(10), P + S(34));
-
   x = P + S(6);
-  tw = rx - S(10) - x;
-  if (tw < S(60)) tw = w - x - P;
+  tw = w - x - P;
+  if (tw < S(60)) tw = S(60);
 
   if (!wcscmp(gd.kind, L"busy")) {
     if (gd.title[0]) wcsncpy(head, gd.title, 400); else wcsncpy(head, L"正在编译…", 400);
     head[400] = 0;
     copyEllipsis(c.hdc, g_fHead, head, tw, t, 400);
     drawTextAt(&c, c.hdc, x, P, t, g_fHead, 34, 38, 42, 255);
-    copyEllipsis(c.hdc, g_fBody, L"小D 在等编译结果…", tw, t, 400);
+    copyEllipsis(c.hdc, g_fBody, L"等待编译结果…", tw, t, 400);
     drawTextAt(&c, c.hdc, x, P + hHead + S(3), t, g_fBody, 91, 97, 103, 255);
     present(&c, g_hStrip, g_stripX, g_stripY);
     cvFree(&c);
@@ -1786,14 +1752,13 @@ static void renderStrip(void)
 
 /* ------------------------------------------------------------------ 布局 */
 
-/* 提示条的高度（内容 + 小D）：布局和绘制共用 */
+/* 提示条的高度（内容） */
 static int stripHeight(void)
 {
   int lh = textLineH(g_measureDC, g_fBody);
   int lhHead = textLineH(g_measureDC, g_fHead);
   int th = S(10) + lhHead + S(3) + lh * 2 + S(10);
-  int rh = S(10) + S(66) + S(8);   /* 小D 站在右边，至少要装得下它 */
-  return th > rh ? th : rh;
+  return th;
 }
 
 /* 用源码文本估「最长一行的右边界」：右侧面板的墨迹不会被当成代码，
