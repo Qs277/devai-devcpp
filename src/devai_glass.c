@@ -2052,23 +2052,33 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       continue;
     }
 
-    if (changedGeo || g_forceMeasure || (g_needDraw && g_pitch <= 1)) {
-      captureEditor();
-      measureLines();
-      g_forceMeasure = 0;
-      if (g_capFallback) { g_needDraw = 1; g_capFallback = 0; }
-      if (changedGeo) {
+    {
+      /* 抓屏必须先把玻璃自己藏 70ms（否则会把自己的高亮抓进去），
+         所以“重新量”一定要省。窗口被拖动/移动时内容并没有变，
+         只要把浮层跟过去就行；只有尺寸变了、滚动过、有输入才重新量。
+         以前 changedGeo 也算重新量，拖窗口就变成每帧藏一次 —— 满屏闪。 */
+      int sizeChanged = ((edR - edL) != (lastEdR - lastEdL)) ||
+                        ((edB - edT) != (lastEdB - lastEdT));
+      int scrolled = (top != lastTop);
+      if (sizeChanged || scrolled || g_forceMeasure || (g_needDraw && g_pitch <= 1)) {
+        captureEditor();
+        measureLines();
+        g_forceMeasure = 0;
+        if (g_capFallback) { g_needDraw = 1; g_capFallback = 0; }
         lastEdL = edL; lastEdT = edT; lastEdR = edR; lastEdB = edB; lastTop = top;
-      }
-    } else {
-      /* 没有输入事件时低频比对文本指纹（打字/粘贴后编辑器可能自己滚动） */
-      static DWORD lastProbeTick = 0;
-      static long lastSig = -2;
-      if (GetTickCount() - lastProbeTick > 700) {
-        long sig2;
-        lastProbeTick = GetTickCount();
-        sig2 = textSig();
-        if (sig2 >= 0 && sig2 != lastSig) { lastSig = sig2; g_forceMeasure = 1; }
+      } else if (changedGeo) {
+        lastEdL = edL; lastEdT = edT; lastEdR = edR; lastEdB = edB;
+        g_needDraw = 1;
+      } else {
+        /* 没有输入事件时低频比对文本指纹（打字/粘贴后编辑器可能自己滚动） */
+        static DWORD lastProbeTick = 0;
+        static long lastSig = -2;
+        if (GetTickCount() - lastProbeTick > 700) {
+          long sig2;
+          lastProbeTick = GetTickCount();
+          sig2 = textSig();
+          if (sig2 >= 0 && sig2 != lastSig) { lastSig = sig2; g_forceMeasure = 1; }
+        }
       }
     }
 
