@@ -66,6 +66,7 @@ static char g_glassDoc[8192];   /* 缓存 json 原文 */
 static int g_codeX0 = 0;        /* 代码第 0 列的 x（相对编辑区） */
 static int g_charW = 0;         /* 编辑区等宽字符宽度 */
 static int g_forceMeasure = 0;  /* 要求下一次重新截图测量 */
+static int g_measureTrust = 0;  /* 本次重测是否允许改动行距（尺寸变化/首次测量才允许） */
 static int g_targetRowTop = -1; /* 出错行在画面上真实文字范围（避免色带上下漂移） */
 static int g_targetRowBot = -1;
 static int g_sigLine = -999, g_sigBandY = -999, g_sigBandH = -999;
@@ -1253,6 +1254,14 @@ static void measureLines(void)
   minH = S(6);
   if (minH < 5) minH = 5;
 
+  /* 行右侧的“实心底色”判定区：正常代码很少写到这么靠右，
+     这一片如果被同一种颜色整片铺满，基本就是 Dev-C++ 给整行涂的底色
+     （选中行蓝底、错误行红底、断点行等）。 */
+  int solidX0 = w - (w * 32) / 100;
+  if (solidX0 < x0 + S(40)) solidX0 = x0 + S(40);
+  if (solidX0 > limR - S(20)) solidX0 = limR - S(20);
+  if (solidX0 < x0) solidX0 = x0;
+
   /* 逐行统计“文字像素”数量：既用来切行，也用来做行距自相关 */
   static int prof[2048];
   int hi = h;
@@ -1265,6 +1274,7 @@ static void measureLines(void)
   int lastInk = 0;    /* 最后一小片有字的行，卡片可以放到它下面 */
   for (y = 0; y < h && count < 80; y++) {
     int cnt = 0, samples = 0;
+    int fillN = 0, fillHit = 0, fillKey = -1, fillSame = 1;
     for (x = x0; x < sw; x += 2) {
       unsigned int v = g_cap.px[(size_t)y * w + x];
       int r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
@@ -1274,14 +1284,33 @@ static void measureLines(void)
         cnt++; if (x > maxInkX) maxInkX = x;
       }
     }
+    /* 再看行右侧：整片同色 = Dev-C++ 涂的整行底色 */
+    for (x = solidX0; x < limR; x += 3) {
+      unsigned int v = g_cap.px[(size_t)y * w + x];
+      int r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
+      int d = abs(r - bgR) + abs(g - bgG) + abs(b - bgB);
+      int key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
+      fillN++;
+      if (d > 40) {
+        fillHit++;
+        if (fillKey < 0) fillKey = key;
+        else if (key != fillKey) fillSame = 0;
+      }
+    }
     if (y < hi) prof[y] = cnt;
     /* Dev-C++ 给某一行“变色”（红色错误行、蓝色选中行等）时，整行都是底色，
        会被误当成一行文字，把行距/首行相位算歪，导致我们的标行整体错位。
-       这种整行实心底色（覆盖率 >65%）直接跳过，不参与文字行统计。 */
-    if (samples > 0 && cnt * 100 > samples * 65) {
-      if (y < hi) prof[y] = 0;
-      inBand = 0;
-      continue;
+       两个判据任一成立就整行跳过：整行墨迹覆盖率 >65%，或行右侧 88% 以上
+       被同一种非底色铺满。 */
+    {
+      int coloredRow = 0;
+      if (samples > 0 && cnt * 100 > samples * 65) coloredRow = 1;
+      if (fillN > 30 && fillSame && fillHit * 100 > fillN * 88) coloredRow = 1;
+      if (coloredRow) {
+        if (y < hi) prof[y] = 0;
+        inBand = 0;
+        continue;
+      }
     }
     if (cnt > thr) {
       if (y > lastInk) lastInk = y;
@@ -1339,6 +1368,7 @@ static void measureLines(void)
   }
 
   /* 行距：对行轮廓做自相关，找让“文字行对文字行”最吻合的周期（空白行不影响） */
+  int keepGeo = 0;
   {
     int L, pitch = 0;
     long long best = -1;
@@ -1349,9 +1379,10 @@ static void measureLines(void)
     }
     if (pitch <= 0) pitch = S(22);
     /* 自相关偶尔会锁到半周期/谐波上（尤其是屏幕上正好有 Dev-C++ 的整行红底高亮时），
-       这时标行会整体错位。用相邻文字行的实际间距中位数校正一下。 */
+       这时标行会整体错位。用相邻文字行的实际间距中位数校正一下；
+       样本够多时直接用中位数（空白行只会给出整数倍，中位数仍落在行距上）。 */
     {
-      int gaps[64], gn = 0, a, b2, med;
+      int gaps[64], gn = 0, a, b2, med = 0;
       for (i = 1; i < count && gn < 64; i++) {
         int gp = starts[i] - starts[i - 1];
         if (gp >= S(10) && gp <= S(60)) gaps[gn++] = gp;
@@ -1363,20 +1394,38 @@ static void measureLines(void)
           gaps[b2 + 1] = v;
         }
         med = gaps[gn / 2];
-        if (med > 0 && (pitch * 4 < med * 3 || pitch * 3 > med * 4)) pitch = med;
+        if (gn >= 4) pitch = med;
+        else if (med > 0 && (pitch * 4 < med * 3 || pitch * 3 > med * 4)) pitch = med;
+      }
+    }
+    /* 行距一旦量准就不再随便改。滚动、Dev-C++ 给某行变色都会触发重测，
+       重测如果给出明显不同的值，一律保留旧值 —— 否则标行会整体跳到别的行上。
+       只有窗口尺寸变了（字体/缩放真的变了）或还没量过时才接受新值。 */
+    if (g_pitch > S(8) && !g_measureTrust) {
+      int d = pitch - g_pitch;
+      if (d < 0) d = -d;
+      if (count < 6 || d * 100 > g_pitch * 12) {
+        glog(L"measure pitch rejected raw=%d keep=%d count=%d", pitch, g_pitch, count);
+        pitch = g_pitch; keepGeo = 1;
       }
     }
     g_pitch = pitch;
   }
 
   /* 首行相位：让每一行的文字顶都落在同一个偏移上（文字最密的那一行对齐） */
-  {
+  if (!keepGeo) {
     int p, bestP = 0;
     long long bestS = -1;
     for (p = 0; p < g_pitch; p++) {
       long long s = 0;
       for (y = p; y < hi; y += g_pitch) s += prof[y];
       if (s > bestS || (s == bestS && p < bestP)) { bestS = s; bestP = p; }
+    }
+    /* 相位整体乱跳（多半是变色行把轮廓搅了）也不采用 */
+    {
+      int d = bestP - g_firstTextY;
+      if (d < 0) d = -d;
+      if (g_firstTextY > 0 && d > g_pitch / 2 && !g_measureTrust) bestP = g_firstTextY;
     }
     g_firstTextY = bestP;
   }
@@ -2241,6 +2290,9 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
          行距/右边界全都会算错 —— 运行期间只沿用上一次量好的几何 */
       int executing = hostExecuting();
       if (!executing && (sizeChanged || scrolled || g_forceMeasure || (g_needDraw && g_pitch <= 1))) {
+        /* 只有窗口尺寸变了、或者第一次测量，才允许改行距；
+           单纯滚动/选中行变色引起的重测一律沿用已经量准的行距 */
+        g_measureTrust = (sizeChanged || g_pitch <= S(8)) ? 1 : 0;
         captureEditor();
         measureLines();
         g_forceMeasure = 0;

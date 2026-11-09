@@ -111,7 +111,11 @@ Copy-Item (Join-Path $PluginRoot 'bin\devai_gcc.exe') (Join-Path $DevAIHomeDir '
 Copy-Item (Join-Path $PluginRoot 'bin\devai_gpp.exe') (Join-Path $DevAIHomeDir 'bin\devai_gpp.exe') -Force
 Copy-Item (Join-Path $PluginRoot 'bin\devai_console.exe') (Join-Path $DevAIHomeDir 'bin\devai_console.exe') -Force
 Copy-Item (Join-Path $PluginRoot 'bin\devai_dock.exe') (Join-Path $DevAIHomeDir 'bin\devai_dock.exe') -Force
-Write-Ok "运行目录：$DevAIHomeDir（含窗口嵌入组件 devai_dock.exe）"
+Copy-Item (Join-Path $PluginRoot 'bin\devai_glass.exe') (Join-Path $DevAIHomeDir 'bin\devai_glass.exe') -Force
+if (Test-Path (Join-Path $PluginRoot 'bin\open-panel.ps1')) {
+    Copy-Item (Join-Path $PluginRoot 'bin\open-panel.ps1') (Join-Path $DevAIHomeDir 'bin\open-panel.ps1') -Force
+}
+Write-Ok "运行目录：$DevAIHomeDir（含窗口嵌入组件 devai_dock.exe / 玻璃浮层 devai_glass.exe）"
 
 # Node 路径
 $nodePath = ''
@@ -223,21 +227,40 @@ Write-GbkFile $launcher @"
 chcp 936 >nul
 title Dev-C++ 智能版启动器
 set DEVAI_HOME=$DevAIHomeDir
+set PORT=47901
+if exist "%DEVAI_HOME%\port.txt" set /p PORT=<"%DEVAI_HOME%\port.txt"
 echo =================================================
-echo    DevAI 小助手  正在启动 ...
+echo    DevAI 小助手  正在启动（Dev-C++ + 右侧助手面板）
 echo =================================================
 if not exist "%DEVAI_HOME%\node_path.txt" goto noagent
-wscript //nologo "%DEVAI_HOME%\bin\start-agent.vbs"
+
+rem 1) 先启动 Dev-C++，助手面板一出来就能贴到它右边（已经在跑就不再开一个）
+set DEVCPP=$DevCppRoot\DevCpp.exe
+if defined DEVCPP tasklist /fi "imagename eq DevCpp.exe" 2>nul | find /i "DevCpp.exe" >nul || start "" "%DEVCPP%"
 timeout /t 2 /nobreak >nul
-echo [DevAI] 助手已就绪，正在打开 Dev-C++ ...
-start "" "$DevCppRoot\DevCpp.exe"
-echo [DevAI] 祝编译顺利！本窗口 5 秒后自动关闭。
-timeout /t 5 /nobreak >nul
+
+rem 2) 启动助手服务
+wscript //nologo "%DEVAI_HOME%\bin\start-agent.vbs"
+
+rem 3) 打开右侧助手面板（服务没起来或窗口没出现时，脚本会自己拉起浏览器窗口）
+powershell -NoProfile -ExecutionPolicy Bypass -File "%DEVAI_HOME%\bin\open-panel.ps1" -Port %PORT%
+
+rem 4) 清空上一轮的分析记录，面板从空白开始
+powershell -NoProfile -Command "try{Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://127.0.0.1:%PORT%/api/reset' -Body '{}' -ContentType 'application/json' -TimeoutSec 3 | Out-Null}catch{}" >nul 2>&1
+
+rem 5) 玻璃浮层与窗口吸附（已经在跑就不重复开）
+tasklist /fi "imagename eq devai_glass.exe" 2>nul | find /i "devai_glass.exe" >nul || start "" "%DEVAI_HOME%\bin\devai_glass.exe"
+tasklist /fi "imagename eq devai_dock.exe" 2>nul | find /i "devai_dock.exe" >nul || start "" "%DEVAI_HOME%\bin\devai_dock.exe"
+
+echo [DevAI] 已全部启动：Dev-C++ 在左，助手面板在右。本窗口 3 秒后自动关闭。
+timeout /t 3 /nobreak >nul
 exit
+
 :noagent
-echo [DevAI] 未检测到 Node.js，AI 讲解功能不可用，仅启动 Dev-C++。
+echo [DevAI] 未检测到 Node.js，AI 讲解功能不可用，仅启动 Dev-C++ 和玻璃浮层。
 start "" "$DevCppRoot\DevCpp.exe"
-timeout /t 5 /nobreak >nul
+tasklist /fi "imagename eq devai_glass.exe" 2>nul | find /i "devai_glass.exe" >nul || start "" "%DEVAI_HOME%\bin\devai_glass.exe"
+timeout /t 4 /nobreak >nul
 exit
 "@
 
@@ -255,14 +278,7 @@ if not exist "%DEVAI_HOME%\node_path.txt" (
 set PORT=47901
 if exist "%DEVAI_HOME%\port.txt" set /p PORT=<"%DEVAI_HOME%\port.txt"
 wscript //nologo "%DEVAI_HOME%\bin\start-agent.vbs"
-for /l %%i in (1,1,15) do (
-  powershell -NoProfile -Command "try{(Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://127.0.0.1:%PORT%/api/show-panel' -Body '{}' -ContentType 'application/json' -TimeoutSec 2).StatusCode}catch{exit 1}" >nul 2>&1 && goto opened
-  timeout /t 1 /nobreak >nul
-)
-echo [DevAI] 助手服务还没起来，稍等几秒再点一次。
-timeout /t 4 /nobreak >nul
-exit
-:opened
+powershell -NoProfile -ExecutionPolicy Bypass -File "%DEVAI_HOME%\bin\open-panel.ps1" -Port %PORT%
 echo [DevAI] 面板已打开，看屏幕右上角。
 timeout /t 3 /nobreak >nul
 exit
