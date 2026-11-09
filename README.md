@@ -9,8 +9,8 @@
 编译一报错，小D 就在出错那一行划红线，用三个框讲清「为什么错 / 改哪里 / 记住什么」——
 不切窗口、不打断思路、不堆日志。
 
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?style=flat-square)](https://github.com)
-[![Dev-C++](https://img.shields.io/badge/Dev--C%2B%2B-6.x-e2624b?style=flat-square)](https://github.com)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?style=flat-square)](https://github.com/Qs277/devai-devcpp)
+[![Dev-C++](https://img.shields.io/badge/Dev--C%2B%2B-6.x-e2624b?style=flat-square)](https://github.com/Qs277/devai-devcpp)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-3fb950?style=flat-square)](https://nodejs.org)
 [![License](https://img.shields.io/badge/license-MIT-22272e?style=flat-square)](LICENSE)
 
@@ -58,7 +58,7 @@
 
 > 需要：Windows 10/11、[Dev-C++ 6.x](https://github.com/Embarcadero/Dev-Cpp)、[Node.js 18+](https://nodejs.org)
 
-1. 下载 Release 包并解压到任意目录（**不要**解压到 C 盘根目录或中文路径下）；
+1. 下载 [Release 包](https://github.com/Qs277/devai-devcpp/releases/latest) 并解压到任意目录（**不要**解压到 C 盘根目录或中文路径下）；
 2. 双击 **`安装 DevAI.bat`**（右键 → 以管理员身份运行更稳）；
 3. 用桌面上生成的 **`启动 Dev-C++ 智能版.bat`** 打开 Dev-C++，然后在面板「设置」里填你自己的 API Key。
 
