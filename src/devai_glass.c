@@ -2005,7 +2005,9 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
     {
       HWND fg = GetForegroundWindow();
       BOOL active = 0;
-      if (fg) {
+      /* Dev-C++ 主窗自己被藏起来（比如程序正在 [Executing]）时绝不能画：
+         否则玻璃会浮在别的程序上面 */
+      if (fg && g_hHost && IsWindowVisible(g_hHost)) {
         WCHAR t[256], cls[128];
         active = (fg == g_hHost || GetAncestor(fg, GA_ROOT) == g_hHost);
         if (!active && g_hEdit && GetAncestor(g_hEdit, GA_ROOT) == fg) active = 1;
