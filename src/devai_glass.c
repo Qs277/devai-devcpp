@@ -991,11 +991,14 @@ static int lineVisual(int s, int e, int *indent)
   return last;
 }
 
+/* 纵向滚动条读出来的行信息（1 起的第一可见行 / 总行数 / 一屏行数） */
+static int g_scrollTop = 0, g_scrollLines = 0, g_scrollPage = 0;
+
 /* 用编辑器的真实文本反推“当前第一可见行”：把每行字宽和画面上量到的行尾对齐 */
 static void detectTopLine(int *starts, int *ends, int count)
 {
   static int off[4096];
-  int lc, i, t, rn = 0, bestT = 0, bestX0 = 0, bestCw = 0;
+  int lc, i, t, rn = 0, bestT = 0, bestX0 = 0, bestCw = 0, scrollOK = 0;
   double bestCost = 1e18;
   int ks[60], inkS[60], inkE[60], rowY[60], rowTop[60], rowBot[60], rowLim[60];
   int pitch = g_pitch > 0 ? g_pitch : S(22);
@@ -1003,6 +1006,11 @@ static void detectTopLine(int *starts, int *ends, int count)
   g_targetRowTop = g_targetRowBot = -1;
   if (!readEditorText()) return;
   lc = textLineCount(off, 4096);
+  /* 滚动条可信（总行数对得上）时，它给的第一可见行最准；
+     像素拟合在代码高度重复的文件里容易整体错几行。 */
+  scrollOK = (g_scrollTop > 0 && g_scrollPage > 0 && g_scrollLines > 0 &&
+              abs(g_scrollLines - lc) <= 2);
+  if (scrollOK) g_topLine = g_scrollTop;
   for (i = 0; i < count && rn < 60; i++) {
     int a, b, lm = 0, k2;
     rowInkRange(starts[i], ends[i] - starts[i] + 1, &a, &b, &lm);
@@ -1079,6 +1087,7 @@ static void detectTopLine(int *starts, int *ends, int count)
     cost /= cmp;
     if (cost < bestCost) { bestCost = cost; bestT = t; bestX0 = (int)x0; bestCw = (int)cw; }
   }
+  if (scrollOK && bestT > 0) bestT = g_scrollTop;
   if (bestT > 0 && bestCw > 0) {
     int ph[60], pn = 0, bestD = 1 << 30, avg;
     long sum = 0;
@@ -1174,22 +1183,29 @@ static long textSig(void)
   return s;
 }
 
-/* 第 line 行、第 col 列之前有多少个“可视列”（tab 展开、GBK 双字节算 2 列） */
+/* 编译器报的“第 col 列”（1 起，tab 按 8 列推进，跟 gcc 一致）
+   对应到编辑器里是第几个“可视列”（编辑器 tab 按 4 列展开、GBK 双字节算 2 列）。
+   两个 tab 宽度不一样，所以不能直接拿列号当可视列用，必须先把每个字符
+   在编译器的列号算出来，找到那个字符，再数它在编辑器里占几列。 */
 static int visualColBefore(int line, int col)
 {
   static int off[4096];
-  int lc, s, e, i, c = 0, vc = 0;
+  int lc, s, e, i, gcol = 1, vc = 0;
   if (line < 1 || col < 1 || g_editTextLen <= 0) return -1;
   lc = textLineCount(off, 4096);
   if (line > lc) return -1;
   s = off[line - 1];
   e = (line < lc) ? off[line] : g_editTextLen;
-  for (i = s; i < e && c < col - 1; i++) {
+  for (i = s; i < e && gcol < col; i++) {
     unsigned char ch = (unsigned char)g_editText[i];
-    int w2 = 1;
-    if (ch == '\t') w2 = 4 - (vc % 4);
-    else if (ch >= 0x81 && ch < 0xFF && i + 1 < e) { w2 = 2; i++; }
-    vc += w2; c++;
+    if (ch == '\t') {
+      gcol = ((gcol - 1) / 8 + 1) * 8 + 1;
+      vc += 4 - (vc % 4);
+    } else if (ch >= 0x81 && ch < 0xFF && i + 1 < e) {
+      gcol += 2; vc += 2; i++;
+    } else {
+      gcol += 1; vc += 1;
+    }
   }
   return vc;
 }
@@ -1381,7 +1397,14 @@ static int readTopLine(void)
   si.cbSize = sizeof(si);
   si.fMask = SIF_ALL;
   if (g_hEdit && GetScrollInfo(g_hEdit, SB_VERT, &si)) {
+    /* TSynEdit 的纵向滚动条是按“行”走的：nPos 就是第一可见行（1 起）、
+       nMax 是总行数、nPage 是一屏行数。这套数字直接读，比像素拟合准。 */
+    g_scrollTop = si.nPos;
+    g_scrollLines = si.nMax;
+    g_scrollPage = si.nPage;
     if (si.nPos > 0) return si.nPos;
+  } else {
+    g_scrollTop = 0; g_scrollLines = 0; g_scrollPage = 0;
   }
   return 1;
 }
@@ -2034,6 +2057,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
     /* 找 Dev-C++ 窗口 */
     if (!locateWindows()) {
       hideAll();
+      lastDrawn = 0;
       writeAlive();
       static int noHostLogged = 0;
       if (!noHostLogged) { glog(L"no Dev-C++ host/editor"); noHostLogged = 1; }
@@ -2072,6 +2096,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       }
       if (!active) {
         hideAll();
+        lastDrawn = 0;
         writeAlive();
         Sleep(300);
         continue;
@@ -2083,6 +2108,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
 
     if (!gd.hasData || !gd.on) {
       hideAll();
+      lastDrawn = 0;
       writeAlive();
       lastEdL = edL; lastTop = top; lastLine = gd.line;
       Sleep(230);
@@ -2092,6 +2118,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
     /* 过期（5 分钟）就收起，避免挡着 */
     if (gd.ts != 0 && (DWORD)(GetTickCount() - gd.ts) > 300000) {
       hideAll();
+      lastDrawn = 0;
       writeAlive();
       Sleep(230);
       continue;
@@ -2119,7 +2146,9 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
 
     layout();
 
-    if (g_needDraw || gd.line != lastLine ||
+    /* !lastDrawn：窗口被收起过（切走/没找到 Dev-C++）就必须重画，
+       否则 SetWindowPos 不会把隐藏窗口显示出来，浮层会一直不出现 */
+    if (g_needDraw || !lastDrawn || gd.line != lastLine ||
         g_bandLineY != g_sigBandY || g_bandLineH != g_sigBandH ||
         g_cardX != g_sigCardX || g_cardY != g_sigCardY ||
         g_stripX != g_sigStripX || g_stripY != g_sigStripY ||
