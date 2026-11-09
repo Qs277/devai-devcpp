@@ -1,0 +1,30 @@
+# 运行时数据与本地隐私（绝对不要提交）
+config.json
+state/
+queue/
+backup/
+panelprofile/
+node_path.txt
+port.txt
+install-state.json
+agent.pid
+
+# 编译中间产物
+build/
+*.o
+*.obj
+
+# 个人测试文件
+_demo.cpp
+_demo.exe
+_out.txt
+_win.txt
+*.log
+*.bmp
+*.png
+!docs/*.png
+
+# 系统
+Thumbs.db
+desktop.ini
+.DS_Store

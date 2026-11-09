@@ -1,0 +1,11 @@
+{
+  "apiBase": "https://api.deepseek.com",
+  "apiKey": "",
+  "model": "deepseek-chat",
+  "temperature": 0.2,
+  "maxTokens": 1200,
+  "port": 47901,
+  "autoOpenPanel": true,
+  "explainRuntime": true,
+  "explainWarnings": true
+}
