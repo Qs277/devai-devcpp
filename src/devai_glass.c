@@ -37,7 +37,7 @@ static int gDpi = 144;
 
 static HFONT g_fHead, g_fBody, g_fSmall, g_fMono, g_fTag;
 
-static HWND g_hBand, g_hStrip, g_hCard, g_hMemoStrip;
+static HWND g_hBand, g_hStrip, g_hCard;
 static HWND g_hEdit, g_hHost, g_hMemo;
 
 static int g_hostL, g_hostT, g_hostR, g_hostB;
@@ -71,7 +71,6 @@ static int g_targetRowBot = -1;
 static int g_sigLine = -999, g_sigBandY = -999, g_sigBandH = -999;
 static int g_sigCardX = -999, g_sigCardY = -999, g_sigCollapsed = -1;
 static int g_sigStripX = -999, g_sigStripY = -999;
-static int g_sigMemoH = -999, g_sigMemoL = -999, g_sigMemoT = -999;
 static int g_bgR = 255, g_bgG = 255, g_bgB = 255;
 static char g_editText[65536];  /* 编辑区全文（真实文本，用来定位是哪几行） */
 static int g_editTextLen = 0;
@@ -1265,7 +1264,7 @@ static void measureLines(void)
   int maxInkX = 0;
   int lastInk = 0;    /* 最后一小片有字的行，卡片可以放到它下面 */
   for (y = 0; y < h && count < 80; y++) {
-    int cnt = 0, redcnt = 0, samples = 0;
+    int cnt = 0, samples = 0;
     for (x = x0; x < sw; x += 2) {
       unsigned int v = g_cap.px[(size_t)y * w + x];
       int r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
@@ -1273,13 +1272,13 @@ static void measureLines(void)
       samples++;
       if (d > 240) {
         cnt++; if (x > maxInkX) maxInkX = x;
-        /* Dev-C++ 自己的“错误行”是整行红底，会把行距/首行相位算歪，
-           导致我们的标行整体错位。这种整行红底不算文字行。 */
-        if (r > 120 && r - g > 40 && r - b > 40) redcnt++;
       }
     }
     if (y < hi) prof[y] = cnt;
-    if (samples > 0 && redcnt * 3 > samples) {
+    /* Dev-C++ 给某一行“变色”（红色错误行、蓝色选中行等）时，整行都是底色，
+       会被误当成一行文字，把行距/首行相位算歪，导致我们的标行整体错位。
+       这种整行实心底色（覆盖率 >65%）直接跳过，不参与文字行统计。 */
+    if (samples > 0 && cnt * 100 > samples * 65) {
       if (y < hi) prof[y] = 0;
       inBand = 0;
       continue;
@@ -1841,72 +1840,6 @@ static void renderStrip(void)
   cvFree(&c);
 }
 
-/* ------------------------------------------------------------------ 绘制：运行结果面板上方的监测条 */
-
-static int g_memoStripH = 0;
-
-static void renderMemoStrip(void)
-{
-  Canvas c;
-  int w = g_memoR - g_memoL;
-  int h = g_memoB - g_memoT;
-  int P = S(9), y, x, tw, hHead, hBody, stripH;
-  WCHAR head[520], t[520];
-
-  if (w < S(160) || h < S(48)) { hideWindow(g_hMemoStrip); g_memoStripH = 0; return; }
-  /* 助手面板在右边时别画到它下面 */
-  if (g_panelL > g_memoL) {
-    int pl = g_panelL - g_memoL - S(8);
-    if (pl > S(160) && pl < w) w = pl;
-  }
-  stripH = S(64);
-  if (stripH > h - S(6)) stripH = h - S(6);
-  if (stripH < S(36)) stripH = S(36);
-  if (!cvCreate(&c, w, stripH)) return;
-
-  cvFill(&c, 0, 0, w, stripH, 255, 253, 248, 236);
-  cvFill(&c, 0, 0, S(5), stripH, 226, 100, 59, 255);
-  cvRect(&c, 0, 0, w, stripH, 34, 38, 42, 200);
-
-  if (!gd.on) { present(&c, g_hMemoStrip, g_memoL, g_memoT); cvFree(&c); return; }
-
-  hHead = textLineH(c.hdc, g_fHead);
-  hBody = textLineH(c.hdc, g_fBody);
-  x = S(9) + S(6);
-  tw = w - x - P;
-  if (tw < S(80)) tw = S(80);
-  y = P;
-
-  if (!wcscmp(gd.kind, L"busy")) {
-    copyEllipsis(c.hdc, g_fHead, gd.title[0] ? gd.title : L"正在编译…", tw, t, 400);
-    drawTextAt(&c, c.hdc, x, y, t, g_fHead, 34, 38, 42, 255);
-    copyEllipsis(c.hdc, g_fBody, L"小D 正在盯编译结果…", tw, t, 400);
-    drawTextAt(&c, c.hdc, x, y + hHead + S(2), t, g_fBody, 91, 97, 103, 255);
-  } else {
-    if (gd.ok)
-      wsprintfW(head, L"[通过] %s", gd.title[0] ? gd.title : L"编译通过");
-    else if (gd.line > 0)
-      wsprintfW(head, L"[错误] 第 %d 行 · %s", gd.line, gd.title[0] ? gd.title : L"编译失败");
-    else
-      wsprintfW(head, L"[错误] %s", gd.title[0] ? gd.title : L"编译失败");
-    head[400] = 0;
-    copyEllipsis(c.hdc, g_fHead, head, tw, t, 400);
-    drawTextAt(&c, c.hdc, x, y, t, g_fHead,
-               gd.ok ? 60 : 176, gd.ok ? 122 : 52, gd.ok ? 74 : 60, 255);
-
-    y += hHead + S(2);
-    if (y + hBody <= stripH - S(2)) {
-      const WCHAR *cause = gd.cause[0] ? gd.cause : (gd.where[0] ? gd.where : L"看下面的编译输出");
-      copyEllipsis(c.hdc, g_fBody, cause, tw, t, 400);
-      drawTextAt(&c, c.hdc, x, y, t, g_fBody, 34, 38, 42, 255);
-    }
-  }
-
-  present(&c, g_hMemoStrip, g_memoL, g_memoT);
-  g_memoStripH = stripH;
-  cvFree(&c);
-}
-
 /* ------------------------------------------------------------------ 布局 */
 
 /* 提示条的高度（内容） */
@@ -2073,7 +2006,6 @@ static void hideAll(void)
   hideWindow(g_hBand);
   hideWindow(g_hStrip);
   hideWindow(g_hCard);
-  hideWindow(g_hMemoStrip);
 }
 
 /* Dev-C++ 正在运行程序时标题会带 [Executing]：这时控制台窗口会盖住编辑区，
@@ -2161,7 +2093,6 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
   g_hBand = mkLayered(1);
   g_hStrip = mkLayered(1);
   g_hCard = mkLayered(0);
-  g_hMemoStrip = mkLayered(1);
   lastWrite.dwLowDateTime = 0; lastWrite.dwHighDateTime = 0;
 
   while (1) {
@@ -2339,7 +2270,6 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
         g_bandLineY != g_sigBandY || g_bandLineH != g_sigBandH ||
         g_cardX != g_sigCardX || g_cardY != g_sigCardY ||
         g_stripX != g_sigStripX || g_stripY != g_sigStripY ||
-        g_memoStripH != g_sigMemoH || g_memoL != g_sigMemoL || g_memoT != g_sigMemoT ||
         g_collapsed != g_sigCollapsed) {
       if (!wcscmp(gd.kind, L"busy")) {
         hideWindow(g_hBand);
@@ -2350,7 +2280,6 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
         renderCard();
       }
       renderStrip();
-      renderMemoStrip();
       g_needDraw = 0;
       g_sigLine = gd.line;
       g_sigBandY = g_bandLineY;
@@ -2359,9 +2288,6 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       g_sigCardY = g_cardY;
       g_sigStripX = g_stripX;
       g_sigStripY = g_stripY;
-      g_sigMemoH = g_memoStripH;
-      g_sigMemoL = g_memoL;
-      g_sigMemoT = g_memoT;
       g_sigCollapsed = g_collapsed;
       lastLine = gd.line;
       lastTop = top;
@@ -2371,8 +2297,6 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       SetWindowPos(g_hBand, HWND_TOPMOST, edL, edT, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
       SetWindowPos(g_hStrip, HWND_TOPMOST, g_stripX, g_stripY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
       SetWindowPos(g_hCard, HWND_TOPMOST, g_cardX, g_cardY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
-      if (g_memoStripH > 0)
-        SetWindowPos(g_hMemoStrip, HWND_TOPMOST, g_memoL, g_memoT, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
     }
 
     writeAlive();

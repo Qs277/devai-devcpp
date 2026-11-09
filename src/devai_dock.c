@@ -141,7 +141,9 @@ static BOOL CALLBACK enumHost(HWND h, LPARAM lp)
     if (!GetWindowRect(h, &r)) return TRUE;
     int w = r.right - r.left;
     int hh = r.bottom - r.top;
-    if (w < 640 || hh < 420) return TRUE;   /* 过滤掉 Delphi 的小工具窗 / IME 窗 */
+    int icon = IsIconic(h) ? 1 : 0;
+    /* 最小化之后窗口矩形会缩得很小，不能按尺寸过滤掉，否则找不到宿主 */
+    if (!icon && (w < 640 || hh < 420)) return TRUE;   /* 过滤掉 Delphi 的小工具窗 / IME 窗 */
 
     WCHAR title[256];
     GetWindowTextW(h, title, 256);
@@ -160,7 +162,7 @@ static BOOL CALLBACK enumHost(HWND h, LPARAM lp)
     if (!ok) return TRUE;
     if (!wcontains(path, gHostName)) return TRUE;
 
-    long area = (long)w * (long)hh;
+    long area = icon ? 1 : (long)w * (long)hh;
     if (area > gBestArea) {
         gBestArea = area;
         gFound = h;
@@ -417,6 +419,8 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, PWSTR cmd, int show)
     DWORD goneAt = 0;
     DWORD hostGoneAt = 0;
     long raiseSeen = 0;
+    HWND lastHost = NULL;
+    int  hiddenForMin = 0;
 
     for (;;) {
         WCHAR mode[32];
@@ -455,6 +459,10 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, PWSTR cmd, int show)
 
         /* Chromium 冷启动时会把 --app 窗口先建成隐藏的，不替它显示就永远看不见 */
         host = findHost();
+        /* Dev-C++ 最小化后窗口尺寸变成 0，findHost 会找不到它。
+           这时沿用上一次找到的宿主句柄，否则面板会以为宿主没了而一直亮着 */
+        if (host) lastHost = host;
+        else if (lastHost && IsWindow(lastHost)) host = lastHost;
         if (!host || !IsWindow(host)) {
             /* 启动器里面板比 Dev-C++ 先起来是常态：先按浮窗显示，
                等宿主窗口出现再贴到右边（以前这里直接退出，所以面板一直不显示） */
@@ -470,6 +478,25 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, PWSTR cmd, int show)
             }
         }
         hostGoneAt = 0;
+
+        /* Dev-C++ 最小化时把面板一起收起。只在“状态变化”时动一次，
+           否则每 200ms 显示/隐藏一次就是一直在闪 */
+        int hostMin = (host && (IsIconic(host) || !IsWindowVisible(host)));
+        if (want == 1 && hostMin) {
+            if (!hiddenForMin) {
+                for (int i = 0; i < n; ++i)
+                    if (IsWindowVisible(gPanelList[i])) ShowWindow(gPanelList[i], SW_HIDE);
+                hiddenForMin = 1;
+            }
+            Sleep(200);
+            continue;
+        }
+        if (hiddenForMin) {
+            /* 宿主恢复显示，把面板重新亮出来 */
+            for (int i = 0; i < n; ++i)
+                if (!IsWindowVisible(gPanelList[i])) ShowWindow(gPanelList[i], SW_SHOWNOACTIVATE);
+            hiddenForMin = 0;
+        }
 
         if (nvis == 0) {
             if (want == 2) makeFloat(gPanelList[0], host);
