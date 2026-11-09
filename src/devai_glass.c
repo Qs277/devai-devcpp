@@ -1455,6 +1455,9 @@ static void renderBand(void)
         int ind = lineIndentVisual(line);
         if (vc >= 0) {
           if (vc < ind) vc = ind;
+          /* 编译器的列号常落在“出问题的那个字符右边一格”（caret 打在
+             token 末尾），实测标记整体偏右一个字符，这里往左收一格 */
+          if (vc > ind) vc--;
           /* 用拟合出来的代码原点算列位置。不能拿这一行的行首墨迹当基准：
              行号栏右边那个折叠方块也在这行的墨迹里，会把基准带偏 2 个字符。 */
           if (g_codeX0 > 0) px = g_codeX0 + vc * cw;
