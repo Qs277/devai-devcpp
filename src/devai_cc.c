@@ -27,6 +27,28 @@ static char g_home[MAX_PATH];
 static char g_log[MAX_PATH];
 static char g_mode[8];   /* "gcc" 或 "gpp" */
 
+/* 装到非默认目录时，安装器会在本 exe 旁边写 devai-home.txt；
+   这样即使用户直接双击 Dev-C++（没走启动器、没有 DEVAI_HOME 环境变量）也能找对目录 */
+static int home_from_marker(const char *dir, char *out, int cap)
+{
+    char p[MAX_PATH], buf[MAX_PATH];
+    FILE *f;
+    int i, k;
+    sprintf(p, "%s\\devai-home.txt", dir);
+    f = fopen(p, "rb");
+    if (!f) return 0;
+    buf[0] = 0;
+    fgets(buf, sizeof(buf), f);
+    fclose(f);
+    for (i = 0; buf[i]; i++) {
+        if (buf[i] == '\r' || buf[i] == '\n') { buf[i] = 0; break; }
+    }
+    for (k = 0; buf[k] == ' ' || buf[k] == '\t'; k++) {}
+    if (!buf[k]) return 0;
+    lstrcpynA(out, buf + k, cap);
+    return 1;
+}
+
 /* 把 ANSI(GBK) 字符串转成 UTF-8，写事件文件时用，避免中文路径乱码 */
 static void to_utf8(const char *in, char *out, int outlen)
 {
@@ -206,13 +228,15 @@ int main(int argc, char **argv)
     char efile[MAX_PATH];
 
     /* ---- 1. 基本环境 ---- */
-    if (GetEnvironmentVariableA("DEVAI_HOME", g_home, MAX_PATH) <= 0)
-        lstrcpynA(g_home, DEVAI_HOME_DEFAULT, MAX_PATH);
-
     GetModuleFileNameA(NULL, self, MAX_PATH);
     lstrcpynA(dir, self, MAX_PATH);
     p = strrchr(dir, '\\');
     if (p) *p = 0;
+
+    if (GetEnvironmentVariableA("DEVAI_HOME", g_home, MAX_PATH) <= 0) {
+        if (!home_from_marker(dir, g_home, MAX_PATH))
+            lstrcpynA(g_home, DEVAI_HOME_DEFAULT, MAX_PATH);
+    }
 
     name = strrchr(self, '\\');
     name = name ? name + 1 : self;

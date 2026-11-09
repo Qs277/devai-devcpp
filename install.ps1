@@ -166,6 +166,12 @@ Copy-Item (Join-Path $PluginRoot 'bin\devai_gcc.exe') $gcc -Force
 Copy-Item (Join-Path $PluginRoot 'bin\devai_gpp.exe') $gpp -Force
 Write-Ok 'gcc.exe / g++.exe 已接入 DevAI 拦截层'
 
+# 把安装目录写成标记文件：用户直接双击 Dev-C++（不走启动器、没有 DEVAI_HOME）时拦截器也能找到 DevAI
+$gbk = [System.Text.Encoding]::GetEncoding(936)
+[System.IO.File]::WriteAllText((Join-Path $MingwBin 'devai-home.txt'), $DevAIHomeDir, $gbk)
+[System.IO.File]::WriteAllText((Join-Path $DevCppRoot 'devai-home.txt'), $DevAIHomeDir, $gbk)
+Write-Ok "已记录安装目录：$DevAIHomeDir"
+
 # 运行拦截：替换 ConsolePauser.exe（原文件备份为 ConsolePauser.orig.exe）
 $cp = Join-Path $DevCppRoot 'ConsolePauser.exe'
 $cpOrig = Join-Path $DevCppRoot 'ConsolePauser.orig.exe'

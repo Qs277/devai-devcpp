@@ -24,6 +24,28 @@
 
 static char g_home[MAX_PATH];
 
+/* 装到非默认目录时，安装器会在本 exe 旁边写 devai-home.txt，
+   没有 DEVAI_HOME 环境变量时用它定位 HOME */
+static int home_from_marker(const char *dir, char *out, int cap)
+{
+    char p[MAX_PATH], buf[MAX_PATH];
+    FILE *f;
+    int i, k;
+    sprintf(p, "%s\\devai-home.txt", dir);
+    f = fopen(p, "rb");
+    if (!f) return 0;
+    buf[0] = 0;
+    fgets(buf, sizeof(buf), f);
+    fclose(f);
+    for (i = 0; buf[i]; i++) {
+        if (buf[i] == '\r' || buf[i] == '\n') { buf[i] = 0; break; }
+    }
+    for (k = 0; buf[k] == ' ' || buf[k] == '\t'; k++) {}
+    if (!buf[k]) return 0;
+    lstrcpynA(out, buf + k, cap);
+    return 1;
+}
+
 static void to_utf8(const char *in, char *out, int outlen)
 {
     int wlen;
@@ -192,9 +214,18 @@ int main(int argc, char **argv)
     DWORD ret;
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
+    char self[MAX_PATH], dir[MAX_PATH];
+    char *p;
 
-    if (GetEnvironmentVariableA("DEVAI_HOME", g_home, MAX_PATH) <= 0)
-        lstrcpynA(g_home, DEVAI_HOME_DEFAULT, MAX_PATH);
+    GetModuleFileNameA(NULL, self, MAX_PATH);
+    lstrcpynA(dir, self, MAX_PATH);
+    p = strrchr(dir, '\\');
+    if (p) *p = 0;
+
+    if (GetEnvironmentVariableA("DEVAI_HOME", g_home, MAX_PATH) <= 0) {
+        if (!home_from_marker(dir, g_home, MAX_PATH))
+            lstrcpynA(g_home, DEVAI_HOME_DEFAULT, MAX_PATH);
+    }
 
     if (argc < 2) {
         printf("\n--------------------------------");

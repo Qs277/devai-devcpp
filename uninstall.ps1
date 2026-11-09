@@ -7,7 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $PluginRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$DevAIHomeDir = if ($DevAIHome) { $DevAIHome } else { 'D:\devai' }
+$DevAIHomeDir = if ($DevAIHome) { $DevAIHome } elseif (Test-Path 'D:\') { 'D:\devai' } else { Join-Path $env:LOCALAPPDATA 'DevAI' }
 $StateFile = Join-Path $DevAIHomeDir 'install-state.json'
 
 $Host.UI.RawUI.WindowTitle = 'DevAI 卸载器'
@@ -90,6 +90,11 @@ if (Test-Path $cpOrig) {
     Write-Host '  已还原 ConsolePauser.exe（原文件保留为 ConsolePauser.orig.exe）' -ForegroundColor Green
 } else {
     Write-Host '  ConsolePauser.exe 没有备份，跳过' -ForegroundColor DarkGray
+}
+
+# ---------------------------------------------------- 清除安装目录标记
+foreach ($mk in @((Join-Path $MingwBin 'devai-home.txt'), (Join-Path $DevCppRoot 'devai-home.txt'))) {
+    if (Test-Path $mk) { Remove-Item $mk -Force -ErrorAction SilentlyContinue }
 }
 
 # ---------------------------------------------------- 开始菜单快捷方式
