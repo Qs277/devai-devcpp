@@ -906,6 +906,8 @@
     if(s.lastAnalysis){
       const la = s.lastAnalysis;
       last.textContent = '上次：' + (la.line ? '第'+la.line+'行 · ' : '') + (la.title||'');
+    } else {
+      last.textContent = '';
     }
   }
 
@@ -931,6 +933,12 @@
         setStatus(m.state);
         if(!cfg.apiKeySet) showNoKeyHint();
         setTimeout(rewireAll, 60);
+      } else if(m.t === 'resetall'){
+        /* 重新启动 Dev-C++：面板和上面的记录全部刷新，从空白开始 */
+        feedEl.innerHTML=''; cards.clear();
+        feedEl.appendChild(emptyState());
+        if(m.config) cfg = m.config;
+        setStatus(m.state);
       } else if(m.t === 'reset'){
         /* 只保留最新一条分析：清掉旧分析卡 */
         for(const [id,rec] of [...cards.entries()]){

@@ -808,6 +808,31 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { app: 'devai', pid: process.pid, port: actualPort });
   }
 
+  /* 每次启动 Dev-C++ 时清空上一轮的分析记录，助手面板从空白开始 */
+  if (req.method === 'POST' && p === '/api/reset') {
+    feed.length = 0;
+    lastScenario = null;
+    chatHistory = [];
+    lastAnalysisKey = '';
+    state.phase = 'idle';
+    state.source = '';
+    state.exe = '';
+    state.compiler = '';
+    state.lastOk = null;
+    state.lastErrors = 0;
+    state.lastExit = null;
+    state.lastAnalysis = null;
+    try { fs.unlinkSync(path.join(STATE_DIR, 'glass.json')); } catch (e) {}
+    /* 队列里上一轮没处理完的事件也一起清掉，避免重启后又把旧分析贴回来 */
+    try {
+      for (const f of fs.readdirSync(QUEUE)) {
+        try { fs.rmSync(path.join(QUEUE, f), { recursive: true, force: true }); } catch (e2) {}
+      }
+    } catch (e2) {}
+    broadcast({ t: 'resetall', state, config: maskConfig(loadConfig()) });
+    return json(res, 200, { ok: true });
+  }
+
   if (req.method === 'GET' && p === '/api/config') return json(res, 200, maskConfig(loadConfig()));
 
   if (req.method === 'POST' && p === '/api/config') {
