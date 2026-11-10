@@ -48,9 +48,13 @@ static int g_pitch;        /* 行高（像素） */
 static int g_firstTextY;   /* 编辑区第一行文字的 y（相对编辑区） */
 static int g_topLine = 1;  /* 当前第一可见行 */
 
-static int g_collapsed = 1;   /* 代码浮窗默认折叠，点标题栏才展开 */
+static int g_collapsed = 0;   /* 浮窗默认展开，点标题栏可折叠成一条 */
 static int g_cardHidden = 0;
 static int g_userDX = 0, g_userDY = 0;
+static int g_userMoved = 0;   /* 用户拖过：位置固定，不再自动贴代码 */
+static int g_userW = 0;       /* 用户拉出来的宽度（0 = 默认宽） */
+static int g_resizing = 0;    /* 正在拖右边缘调宽度 */
+static int g_resizeStartX = 0, g_resizeStartW = 0;
 static int g_needDraw = 1;
 static int g_cardX = 0, g_cardY = 0;
 static int g_stripX = 0, g_stripY = 0, g_stripW = 0, g_stripH = 0;
@@ -612,8 +616,20 @@ static LRESULT CALLBACK GlassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
   case WM_LBUTTONDOWN:
     if (h == g_hCard) {
       POINT pt;
+      RECT rc;
       int headH = g_cardHeadH > 0 ? g_cardHeadH : S(24);
       pt.x = (short)LOWORD(lp); pt.y = (short)HIWORD(lp);
+      GetClientRect(h, &rc);
+      /* 右边缘 12px：拖拽调整浮窗宽度 */
+      if (pt.x >= rc.right - S(12)) {
+        POINT cur;
+        GetCursorPos(&cur);
+        g_resizing = 1;
+        g_resizeStartX = cur.x;
+        g_resizeStartW = g_colW > 0 ? g_colW : S(310);
+        SetCapture(h);
+        return 0;
+      }
       if (pt.y <= headH) {
         GetWindowRect(h, &g_dragRect);
         GetCursorPos(&pt);
@@ -624,17 +640,37 @@ static LRESULT CALLBACK GlassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
     }
     return 0;
   case WM_MOUSEMOVE:
-    if (h == g_hCard && GetCapture() == h) {
-      POINT pt;
-      GetCursorPos(&pt);
-      if (abs(pt.x - g_dragStartX) > 3 || abs(pt.y - g_dragStartY) > 3) g_dragging = 1;
-      if (g_dragging) {
-        g_userDX = pt.x - g_dragStartX;
-        g_userDY = pt.y - g_dragStartY;
-        g_cardX = g_dragRect.left + g_userDX;
-        g_cardY = g_dragRect.top + g_userDY;
-        SetWindowPos(h, HWND_TOPMOST, g_cardX, g_cardY,
-                     0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+    if (h == g_hCard) {
+      if (g_resizing && GetCapture() == h) {
+        POINT cur;
+        int w;
+        GetCursorPos(&cur);
+        w = g_resizeStartW + (cur.x - g_resizeStartX);
+        if (w < S(240)) w = S(240);
+        if (w > S(760)) w = S(760);
+        g_userW = w; g_userMoved = 1; g_needDraw = 1;
+        return 0;
+      }
+      if (GetCapture() == h) {
+        POINT pt;
+        GetCursorPos(&pt);
+        if (abs(pt.x - g_dragStartX) > 3 || abs(pt.y - g_dragStartY) > 3) g_dragging = 1;
+        if (g_dragging) {
+          g_userDX = pt.x - g_dragStartX;
+          g_userDY = pt.y - g_dragStartY;
+          g_cardX = g_dragRect.left + g_userDX;
+          g_cardY = g_dragRect.top + g_userDY;
+          g_userMoved = 1;
+          SetWindowPos(h, HWND_TOPMOST, g_cardX, g_cardY,
+                       0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+          /* 提示条跟着浮窗一起走 */
+          if (g_hStrip) {
+            g_stripX = g_cardX;
+            g_stripY = g_cardY - g_stripH - S(6);
+            SetWindowPos(g_hStrip, HWND_TOPMOST, g_stripX, g_stripY,
+                         0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+          }
+        }
       }
     }
     return 0;
@@ -644,9 +680,13 @@ static LRESULT CALLBACK GlassProc(HWND h, UINT msg, WPARAM wp, LPARAM lp)
       int headH = g_cardHeadH > 0 ? g_cardHeadH : S(24);
       pt.x = (short)LOWORD(lp); pt.y = (short)HIWORD(lp);
       ReleaseCapture();
+      if (g_resizing) {
+        g_resizing = 0;
+        g_needDraw = 1;
+        return 0;
+      }
       if (!g_dragging && pt.y <= headH) {
         g_collapsed = !g_collapsed;   /* 只有点标题栏/折叠条才切换 */
-        g_userDX = 0; g_userDY = 0;   /* 切换后回到自动位置 */
         g_needDraw = 1;
       } else if (g_dragging) {
         g_needDraw = 1;
@@ -1958,78 +1998,65 @@ static void layout(void)
     }
   }
 
-  /* 右侧信息栏：提示条在上、讲解卡在下。
-     右边放不下就整块挪到代码最后一行下面，任何情况下都不压代码。 */
+  /* 助手浮窗：一个普通的独立浮窗。
+     默认贴在 Dev-C++ 窗口右侧、靠上一点；用户拖过或拉过宽度之后，
+     位置和宽度就完全按用户的来，不再跟着代码滚动/出错行重排。 */
   {
-    int limitR = edW - S(8);
-    int baseX, stripH, cardH, codeR, inkR, avail, colW;
-
-    if (g_panelL > g_edL) {
-      int pl = g_panelL - g_edL - S(110);
-      if (pl > S(120) && pl < limitR) limitR = pl;
-    }
-
-    /* 代码真实右边界：像素测量和文本估算取大的，宁可靠右一点 */
-    codeR = g_inkRight > 0 ? g_inkRight : 0;
-    inkR = textInkRight();
-    /* 文件里有比屏幕还长的行时，文本估算会出界，这时只信像素测量 */
-    if (inkR > limitR - S(40)) inkR = 0;
-    if (inkR > codeR) codeR = inkR;
-    if (codeR <= 0) codeR = g_codeX0 > 0 ? g_codeX0 + S(160) : S(300);
-    if (codeR > limitR - S(30)) codeR = limitR - S(30);
-
-    baseX = codeR + S(20);
-    avail = limitR - baseX;
+    int stripH, cardH, colW, totalH;
+    RECT wa;
+    int x, y;
 
     stripH = stripHeight();
-    if (stripH > edH - S(20)) stripH = edH - S(20);
     if (stripH < S(40)) stripH = S(40);
+    if (stripH > S(600)) stripH = S(600);
 
-    if (avail >= S(150)) {
-      colW = avail > S(310) ? S(310) : avail;
+    if (g_userW > 0) {
+      colW = g_userW;
     } else {
-      /* 右边太窄：放到最后一行代码下面（那里是空白），横着铺开 */
-      baseX = S(8);
-      colW = limitR - baseX;
-      if (colW > S(310)) colW = S(310);
-      if (colW < S(140)) colW = S(140);
-      anchorY = (g_lastCodeY > 0) ? g_lastCodeY + S(10) : anchorY;
-      if (anchorY + stripH + S(30) > edH - S(6)) anchorY = edH - stripH - S(30);
-      if (anchorY < S(6)) anchorY = S(6);
+      int avail = edW - S(60);
+      colW = avail > S(330) ? S(330) : avail;
+      if (colW < S(240)) colW = S(240);
     }
-    g_colW = colW;
-    g_colX = baseX;
-
-    g_stripW = colW;
-    g_stripH = stripH;
-    g_stripX = g_edL + baseX;
-    g_stripY = g_edT + anchorY;
 
     cardH = g_collapsed ? S(24) : S(320);
-    g_cardX = g_edL + baseX;
-    g_cardY = g_stripY + stripH + S(6);
-    if (g_cardY + cardH > g_edT + edH - S(4)) g_cardY = g_edT + edH - cardH - S(4);
-    if (g_cardY < g_edT + S(4)) g_cardY = g_edT + S(4);
-    g_cardX += g_userDX;
-    g_cardY += g_userDY;
+    totalH = stripH + S(6) + cardH;
 
-    if (!g_collapsed) {
-      /* 展开后别超出编辑区右边/下边 */
-      if (g_cardX + g_colW > g_edL + limitR) g_cardX = g_edL + limitR - g_colW;
-      if (g_cardX < g_edL + S(4)) g_cardX = g_edL + S(4);
-    }
-    {
-      static int lastLog[6] = {-1,-1,-1,-1,-1,-1};
-      int now[6] = { (int)codeR, baseX, colW, anchorY, stripH, g_panelL };
-      int k, diff = 0;
-      for (k = 0; k < 6; k++) if (now[k] != lastLog[k]) diff = 1;
-      if (diff) {
-        for (k = 0; k < 6; k++) lastLog[k] = now[k];
-        glog(L"layout ed=%dx%d line=%d top=%d rel=%d codeR=%d baseX=%d colW=%d anchorY=%d stripH=%d panelL=%d card=%d,%d pitch=%d firstY=%d dpr=%.2f",
-             edW, edH, line, g_topLine, line - g_topLine, codeR, baseX, colW, anchorY, stripH, g_panelL,
-             g_cardX, g_cardY, g_pitch, g_firstTextY, gDpr);
+    g_colW = colW;
+    g_stripW = colW;
+    g_stripH = stripH;
+
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+
+    if (g_userMoved) {
+      /* 用户自己摆的位置：只夹在屏幕工作区内，不再自动贴代码 */
+      g_stripX = g_cardX;
+      g_stripY = g_cardY - stripH - S(6);
+    } else {
+      RECT hr;
+      if (!GetWindowRect(g_hHost, &hr)) {
+        hr.left = g_edL; hr.top = g_edT; hr.right = g_edR; hr.bottom = g_edB;
       }
+      x = hr.right + S(16);
+      y = hr.top + S(64);
+      if (x + colW > wa.right - S(8)) {
+        /* 屏幕右边放不下：贴到编辑区右侧内边 */
+        x = g_edR - colW - S(16);
+        if (x + colW > wa.right - S(8)) x = wa.right - S(8) - colW;
+        if (x < wa.left + S(8)) x = wa.left + S(8);
+      }
+      if (y + totalH > wa.bottom - S(12)) y = wa.bottom - S(12) - totalH;
+      if (y < wa.top + S(8)) y = wa.top + S(8);
+      g_stripX = x;
+      g_stripY = y;
     }
+
+    if (g_stripY < wa.top) g_stripY = wa.top;
+    if (g_stripY + totalH > wa.bottom) g_stripY = wa.bottom - totalH;
+    if (g_stripX + colW > wa.right) g_stripX = wa.right - colW;
+    if (g_stripX < wa.left) g_stripX = wa.left;
+
+    g_cardX = g_stripX;
+    g_cardY = g_stripY + stripH + S(6);
   }
 }
 
@@ -2179,7 +2206,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
             g_needDraw = 1;
             g_forceMeasure = 1;
             g_userDX = g_userDY = 0;
-            g_collapsed = 1;   /* 代码浮窗默认折叠，用户自己点标题栏展开 */
+            g_collapsed = 0;   /* 新的一次分析：浮窗默认展开 */
             g_cardHidden = 0;
             glog(L"json on=%d kind=%s ok=%d line=%d title=%s", gd.on, gd.kind, gd.ok, gd.line, gd.title);
           }
