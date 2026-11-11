@@ -2895,7 +2895,8 @@ static void layout(void)
         lineR = t > 0 ? t : edW / 2;
       }
       if (lineR > edW) lineR = edW;
-      x = g_edL + lineR + S(12);
+      /* 行末之后再空出 3 个字符的宽度，别贴着最后一个字符太近 */
+      x = g_edL + lineR + S(12) + (g_charW > 0 ? g_charW * 3 : S(36));
       y = bandTop - CS(10);
 
       /* 最多靠到编辑区右边，再往右就越出代码区了 */
