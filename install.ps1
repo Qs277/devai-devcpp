@@ -278,55 +278,27 @@ function Write-GbkFile([string]$path, [string]$content) {
 }
 
 $plainLauncher = Join-Path $DevAIHomeDir '启动 Dev-C++ 智能版.bat'
-$launchers = @()
-foreach ($t in $targets) {
-$launcher = Join-Path $DevAIHomeDir ("启动 Dev-C++ 智能版 ({0}).bat" -f $t.Label)
-$devRoot = $t.Root
-Write-GbkFile $launcher @"
+# 只保留一个启动器：运行时自动扫描本机所有 Dev-C++，弹窗让用户选
+$launcherScript = Join-Path $DevAIHomeDir 'bin\launcher.ps1'
+$srcLauncher = Join-Path $PSScriptRoot 'launcher.ps1'
+if (Test-Path $srcLauncher) {
+    Copy-Item $srcLauncher $launcherScript -Force
+} else {
+    Write-Warn2 "缺少 launcher.ps1，启动器可能无法弹出选择框"
+}
+Write-GbkFile $plainLauncher @"
 @echo off
 chcp 936 >nul
 title Dev-C++ 智能版启动器
 set DEVAI_HOME=$DevAIHomeDir
-set PORT=47901
-if exist "%DEVAI_HOME%\port.txt" set /p PORT=<"%DEVAI_HOME%\port.txt"
-echo =================================================
-echo    DevAI 小助手  正在启动（Dev-C++ + 右侧助手面板）
-echo =================================================
-if not exist "%DEVAI_HOME%\node_path.txt" goto noagent
-
-rem 1) 先启动 Dev-C++，助手面板一出来就能贴到它右边（已经在跑就不再开一个）
-set DEVCPP=$devRoot\DevCpp.exe
-if defined DEVCPP tasklist /fi "imagename eq DevCpp.exe" 2>nul | find /i "DevCpp.exe" >nul || start "" "%DEVCPP%"
-timeout /t 2 /nobreak >nul
-
-rem 2) 启动助手服务
-wscript //nologo "%DEVAI_HOME%\bin\start-agent.vbs"
-
-rem 3) 打开右侧助手面板（服务没起来或窗口没出现时，脚本会自己拉起浏览器窗口）
-powershell -NoProfile -ExecutionPolicy Bypass -File "%DEVAI_HOME%\bin\open-panel.ps1" -Port %PORT%
-
-rem 4) 清空上一轮的分析记录，面板从空白开始
-powershell -NoProfile -Command "try{Invoke-WebRequest -UseBasicParsing -Method Post -Uri 'http://127.0.0.1:%PORT%/api/reset' -Body '{}' -ContentType 'application/json' -TimeoutSec 3 | Out-Null}catch{}" >nul 2>&1
-
-rem 5) 玻璃浮层与窗口吸附（已经在跑就不重复开）
-tasklist /fi "imagename eq devai_glass.exe" 2>nul | find /i "devai_glass.exe" >nul || start "" "%DEVAI_HOME%\bin\devai_glass.exe"
-tasklist /fi "imagename eq devai_dock.exe" 2>nul | find /i "devai_dock.exe" >nul || start "" "%DEVAI_HOME%\bin\devai_dock.exe"
-
-echo [DevAI] 已全部启动：Dev-C++ 在左，助手面板在右。本窗口 3 秒后自动关闭。
-timeout /t 3 /nobreak >nul
-exit
-
-:noagent
-echo [DevAI] 未检测到 Node.js，AI 讲解功能不可用，仅启动 Dev-C++ 和玻璃浮层。
-start "" "$devRoot\DevCpp.exe"
-tasklist /fi "imagename eq devai_glass.exe" 2>nul | find /i "devai_glass.exe" >nul || start "" "%DEVAI_HOME%\bin\devai_glass.exe"
-timeout /t 4 /nobreak >nul
+powershell -NoProfile -ExecutionPolicy Bypass -File "%DEVAI_HOME%\bin\launcher.ps1"
 exit
 "@
-if (-not (Test-Path $plainLauncher)) { Copy-Item $launcher $plainLauncher -Force }
-$launchers += $launcher
-}
-$launcher = $launchers[0]
+# 清掉旧版按版本生成的多个 BAT
+Get-ChildItem $DevAIHomeDir -Filter '启动 Dev-C++ 智能版 (*).bat' -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+$launchers = @($plainLauncher)
+$launcher = $plainLauncher
 
 $panel = Join-Path $DevAIHomeDir '打开助手面板.bat'
 Write-GbkFile $panel @"
@@ -360,23 +332,22 @@ sh.Run """" & node & """ """ & srv & """", 0, False
 $vbs = $vbs.Replace('__NODE__', (Join-Path $DevAIHomeDir 'node_path.txt')).Replace('__SRV__', (Join-Path $DevAIHomeDir 'server\server.js'))
 [System.IO.File]::WriteAllText($agentVbs, $vbs, [System.Text.Encoding]::ASCII)
 
-# 开始菜单快捷方式（不往桌面乱丢文件）
+# 开始菜单快捷方式（不往桌面乱丢文件）：一个入口，多版本在启动时选
 $plainLnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Dev-C++ 智能版.lnk'
-foreach ($t in $targets) {
-    try {
-        $ws = New-Object -ComObject WScript.Shell
-        $sm = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
-        $lnk = Join-Path $sm ("Dev-C++ 智能版 ({0}).lnk" -f $t.Label)
-        $s = $ws.CreateShortcut($lnk)
-        $s.TargetPath = (Join-Path $DevAIHomeDir ("启动 Dev-C++ 智能版 ({0}).bat" -f $t.Label))
-        $s.WorkingDirectory = $DevAIHomeDir
-        $s.IconLocation = (Join-Path $t.Root 'DevCpp.exe') + ',0'
-        $s.Description = '启动 Dev-C++ 并同时开启 DevAI 报错讲解助手'
-        $s.Save()
-        if (-not (Test-Path $plainLnk)) { Copy-Item $lnk $plainLnk -Force }
-        Write-Ok "开始菜单快捷方式：$lnk"
-    } catch { Write-Warn2 "创建快捷方式失败（不影响使用）：$($_.Exception.Message)" }
-}
+$ws = New-Object -ComObject WScript.Shell
+try {
+    $lnk = $plainLnk
+    $s = $ws.CreateShortcut($lnk)
+    $s.TargetPath = $plainLauncher
+    $s.WorkingDirectory = $DevAIHomeDir
+    $s.IconLocation = (Join-Path $targets[0].Root 'DevCpp.exe') + ',0'
+    $s.Description = '启动 Dev-C++ 并同时开启 DevAI 报错讲解助手'
+    $s.Save()
+    Write-Ok "开始菜单快捷方式：$lnk"
+} catch { Write-Warn2 "创建快捷方式失败（不影响使用）：$($_.Exception.Message)" }
+# 清掉旧版按版本生成的快捷方式
+Get-ChildItem (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs') -Filter 'Dev-C++ 智能版 (*).lnk' -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
 # 安装记录：按 Dev-C++ 目录分别记，支持多个版本共存
 $installs = @()

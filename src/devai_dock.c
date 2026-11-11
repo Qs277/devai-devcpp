@@ -202,6 +202,11 @@ static BOOL titleIsPanel(const WCHAR *title)
 static BOOL CALLBACK enumPanel(HWND h, LPARAM lp)
 {
     (void)lp;
+    WCHAR cls[64];
+    GetClassNameW(h, cls, 64);
+    /* 文件夹窗口（资源管理器）绝不能被当成助手面板：
+       以前它会被拖到面板的停靠位置，看起来就像“文件夹和助手浮窗一起出现”。 */
+    if (!_wcsicmp(cls, L"CabinetWClass") || !_wcsicmp(cls, L"ExploreWClass")) return TRUE;
     WCHAR title[256];
     GetWindowTextW(h, title, 256);
     if (!titleIsPanel(title)) return TRUE;
@@ -212,6 +217,9 @@ static BOOL CALLBACK enumPanel(HWND h, LPARAM lp)
 static BOOL CALLBACK enumPanelChild(HWND h, LPARAM lp)
 {
     (void)lp;
+    WCHAR cls[64];
+    GetClassNameW(h, cls, 64);
+    if (!_wcsicmp(cls, L"CabinetWClass") || !_wcsicmp(cls, L"ExploreWClass")) return TRUE;
     WCHAR title[256];
     GetWindowTextW(h, title, 256);
     if (titleIsPanel(title) && gPanelCount < 8) gPanelList[gPanelCount++] = h;

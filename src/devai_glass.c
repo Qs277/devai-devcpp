@@ -33,18 +33,28 @@ static int gDpi = 144;
 
 static HFONT g_fHead, g_fBody, g_fSmall, g_fMono, g_fTag;
 
-static HWND g_hBand, g_hStrip, g_hCard, g_hMemoStrip;
-static HWND g_hEdit, g_hHost, g_hMemo;
+static HWND g_hBand, g_hStrip, g_hCard;
+static HWND g_hEdit, g_hHost, g_hMemo, g_hScroll;
 
 static int g_hostL, g_hostT, g_hostR, g_hostB;
 static int g_edL, g_edT, g_edR, g_edB;       /* 编辑区屏幕坐标 */
 static int g_memoL, g_memoT, g_memoR, g_memoB;
 
 static int g_pitch;        /* 行高（像素） */
-static int g_firstTextY;   /* 编辑区第一行文字的 y（相对编辑区） */
+static int g_firstTextY;   /* 编辑区第一行文字的 y（相对编辑区，测量当时的滚动位置） */
+static int g_baseY = 0;    /* 第 1 行的行顶在“文档坐标”里的 y（与滚动位置无关） */
 static int g_topLine = 1;  /* 当前第一可见行 */
+static int g_scrollPx = 0; /* 已经滚过的像素 */
+/* 抓屏前后滚动条位置没变：这一轮量出来的“第 1 行基准”才可信。
+   用户快速滚轮时，抓到的画面和读到的滚动位置可能差一帧，基准会被污染，
+   滑回顶部就表现为“差一行”。不稳定的一律不采用。 */
+static int g_measScrollStable = 1;
+/* 滚动锚点：在某次“整幅测量”时记下（第一可见行, 滚动条位置）这一对。
+   之后每一帧都用“滚动了多少”去推第一可见行 —— 相对位移不受滚动条 nPos
+   的绝对起点、顶部内边距、行距单位的影响，6.x 按行、7.x 按像素都能精确跟。 */
+static int g_ancLine = 0, g_ancPos = 0, g_ancValid = 0;
 
-static int g_collapsed = 0;   /* 浮窗默认展开，点标题栏可折叠成一条 */
+static int g_collapsed = 0;   /* 讲解内容默认展开，点标题栏才折叠 */
 static int g_cardHidden = 0;
 static int g_userDX = 0, g_userDY = 0;
 static int g_userMoved = 0;   /* 用户拖过：位置固定，不再自动贴代码 */
@@ -55,6 +65,14 @@ static int g_resizeStartX = 0, g_resizeStartW = 0;
 static int g_needDraw = 1;
 static int g_cardX = 0, g_cardY = 0;
 static int g_stripX = 0, g_stripY = 0, g_stripW = 0, g_stripH = 0;
+/* 平滑跟随：layout() 算出来的是“目标位置”，这里记的是当前真正画出去的位置，
+   每帧向目标靠近 1/3，看起来是滑动过去而不是瞬移/闪烁。 */
+static int g_curCardX = 0, g_curCardY = 0, g_curStripX = 0, g_curStripY = 0;
+static int g_curValid = 0;
+static int cardPX(void) { return g_curValid ? g_curCardX : g_cardX; }
+static int cardPY(void) { return g_curValid ? g_curCardY : g_cardY; }
+static int stripPX(void) { return g_curValid ? g_curStripX : g_stripX; }
+static int stripPY(void) { return g_curValid ? g_curStripY : g_stripY; }
 static int g_colW = 0;        /* 右侧信息栏宽度（放不下时整块挪到代码下面） */
 static int g_cardHeadH = 0;   /* 点击标题栏才折叠/展开 */
 static int g_inkRight = 0;    /* 可见代码最右侧有字的 x（相对编辑区），卡片放它右边 */
@@ -71,9 +89,23 @@ static int g_targetRowBot = -1;
 /* Dev-C++ 自己给整行涂的底色（红=错误行、蓝=当前行）。
    这些行在扫描文字行时会被跳过，但正是色带最该压上去的位置。 */
 static int g_colRowTop[32], g_colRowBot[32], g_colRowKind[32], g_colRowN = 0;
+/* 左侧行号栏扫出来的每一条“数字带”的 y 区间（只用来诊断/兜底）。
+   Dev-C++ 每一行都画行号，红/蓝变色行也照画，所以拿它量行距最可靠。 */
+#define GUT_MAX 400
+static int g_gutTop[GUT_MAX], g_gutBot[GUT_MAX], g_gutN = 0;
+static int g_gutOK = 0;
+static int g_gutPitch = 0;    /* 行距（物理像素，整数，回归得到） */
+static int g_gutPhase = 0;    /* 数字带上沿在一个行距内的相位 */
+static int g_gutDigitH = 0;   /* 行号数字的高度中位数 */
+static int g_gutFirstTop = 0; /* 第一可见行的数字带上沿（绝对 y，相对编辑区） */
+/* Dev-C++ 变色行的绝对行号（和 g_colRowTop/Bot 一一对应） */
+static int g_colLine[32];
+static int g_colScroll = -1;  /* 变色行是在哪个滚动位置量到的（滚动后就不再用它的 y） */
 /* 抓屏时能不能把自己的窗口排除掉（Win10 2004+ 不用再藏窗口，就不会闪） */
 static int g_capExclOk = 0;
 static int g_sigLine = -999, g_sigBandY = -999, g_sigBandH = -999;
+static int g_sigBandVis = -1;   /* 上一帧画面上有没有标行 */
+static int g_bandVisible = 0;   /* 当前画面上有没有真的标出错误行 */
 static int g_sigCardX = -999, g_sigCardY = -999, g_sigCollapsed = -1;
 static int g_sigStripX = -999, g_sigStripY = -999;
 static int g_bgR = 255, g_bgG = 255, g_bgB = 255;
@@ -143,6 +175,8 @@ typedef struct {
 } Canvas;
 
 static int S(int px) { return (int)(px * gDpr + 0.5); }
+/* 代码浮窗（讲解卡/提示条）尺寸：和玻璃层同一套 DPI 缩放，不再额外缩小 */
+static int CS(int px) { return (int)(px * gDpr + 0.5); }
 
 static BOOL cvCreate(Canvas *c, int w, int h)
 {
@@ -772,13 +806,39 @@ static int excludeFromCapture(HWND h)
 
 static HWND g_best;
 static long g_bestArea;
+static int g_bestHasEd;
+static int g_scanHasEd;
+
+/* 7.x 的主窗是两层 top-level：外层 wrapper（类名 Window，铺满全屏，里面一个
+   子窗都没有）+ 真正装着编辑器的 form（TCustomForm）。只看面积会选中 wrapper，
+   之后就永远找不到编辑器。更坑的是 7.x 的 form 常常 IsWindowVisible() 报 false
+   （界面明明显示着），所以这里只按“里面有没有真子窗”来认。 */
+static BOOL CALLBACK enumHasEd(HWND h, LPARAM lp)
+{
+  RECT r;
+  (void)lp;
+  if (!GetWindowRect(h, &r)) return TRUE;
+  if ((r.right - r.left) >= 200 && (r.bottom - r.top) >= 80) {
+    g_scanHasEd = 1;
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static int hostHasEditor(HWND h)
+{
+  g_scanHasEd = 0;
+  EnumChildWindows(h, enumHasEd, 0);
+  return g_scanHasEd;
+}
 
 static BOOL CALLBACK enumTop(HWND h, LPARAM lp)
 {
   RECT r;
   WCHAR cls[128], title[256];
+  int hasEd, vis, score;
+  long area;
   (void)lp;
-  if (!IsWindowVisible(h)) return TRUE;
   if (!GetWindowRect(h, &r)) return TRUE;
   GetClassNameW(h, cls, 128);
   if (!wcscmp(cls, CLASS_GLASS)) return TRUE;
@@ -788,11 +848,22 @@ static BOOL CALLBACK enumTop(HWND h, LPARAM lp)
     g_panelL = r.left; g_panelT = r.top; g_panelB = r.bottom;
     return TRUE;
   }
-  if ((r.right - r.left) < 800 || (r.bottom - r.top) < 500) return TRUE;
-  if (!wcsstr(title, L"Dev-C++") && wcscmp(cls, L"TMainForm")) return TRUE;
+  /* 老版（6.x）主窗类是 TMainForm，新版（7.x，Lazarus 重写）是 TCustomForm，
+     两者标题里都有 “Dev-C++”。这里只按标题认宿主，尺寸门槛放宽，
+     用户把窗口拉小也不至于找不到。 */
+  if (!wcsstr(title, L"Dev-C++") && wcscmp(cls, L"TMainForm") && wcscmp(cls, L"TCustomForm"))
+    return TRUE;
+  if ((r.right - r.left) < 700 || (r.bottom - r.top) < 400) return TRUE;
   if (IsIconic(h)) return TRUE;
-  long area = (long)(r.right - r.left) * (r.bottom - r.top);
-  if (area > g_bestArea) { g_bestArea = area; g_best = h; }
+  hasEd = hostHasEditor(h);
+  vis = IsWindowVisible(h) ? 1 : 0;
+  if (!vis && !hasEd) return TRUE;
+  area = (long)(r.right - r.left) * (r.bottom - r.top);
+  /* 有真子窗的（7.x form）优先；其次可见的；同样条件才比面积 */
+  score = hasEd * 2 + vis;
+  if (score > g_bestHasEd || (score == g_bestHasEd && area > g_bestArea)) {
+    g_bestArea = area; g_best = h; g_bestHasEd = score;
+  }
   return TRUE;
 }
 
@@ -805,7 +876,8 @@ static BOOL CALLBACK enumChild(HWND h, LPARAM lp)
   RECT r;
   WCHAR cls[128];
   (void)lp;
-  if (!IsWindowVisible(h)) return TRUE;
+  /* 7.x 的 form 经常 IsWindowVisible() 报 false（界面其实正常显示），
+     这里不能靠可见性过滤，只能靠类名 + 尺寸。 */
   if (!GetWindowRect(h, &r)) return TRUE;
   if ((r.right - r.left) < 200 || (r.bottom - r.top) < 60) return TRUE;
   GetClassNameW(h, cls, 128);
@@ -823,6 +895,104 @@ static HWND findChildClass(HWND host, const WCHAR *cls, int minW, int minH)
   EnumChildWindows(host, enumChild, 0);
   (void)minW; (void)minH;
   return g_childBest;
+}
+
+/* 新版（7.x）的编辑器不是 TSynEdit：它是 Lazarus 的通用 Window 类，
+   外面还套一层同尺寸的容器。找不到 TSynEdit 时按“面积最大、可见、
+   占满上半屏”挑一个，面积相同时取枚举顺序里更靠后的那个（也就是更里层、
+   真正负责绘制和滚动的那一层）。 */
+static HWND g_fbBest;
+static long g_fbArea;
+static int g_fbScroll;
+
+static int isBadEditorClass(const WCHAR *cls)
+{
+  static const WCHAR *bad[] = {
+    L"SysTabControl32", L"SysListView32", L"SysTreeView32", L"SysHeader32",
+    L"msctls_statusbar32", L"msctls_progress32", L"msctls_updown32",
+    L"tooltips_class32", L"toolbarwindow32", L"ReBarWindow32", L"Button",
+    L"ScrollBar", L"LCLComboBox", L"ComboBox", L"ComboLBox", L"Static",
+    L"TPUtilWindow", L"MDIClient", NULL
+  };
+  int i;
+  for (i = 0; bad[i]; i++) if (!_wcsicmp(cls, bad[i])) return 1;
+  return 0;
+}
+
+static BOOL CALLBACK enumFallback(HWND h, LPARAM lp)
+{
+  RECT r;
+  WCHAR cls[128];
+  int hostW = g_hostR - g_hostL, hostH = g_hostB - g_hostT;
+  (void)lp;
+  if (!GetWindowRect(h, &r)) return TRUE;
+  GetClassNameW(h, cls, 128);
+  if (!wcscmp(cls, CLASS_GLASS)) return TRUE;
+  if (isBadEditorClass(cls)) return TRUE;
+  if ((r.right - r.left) < hostW / 2) return TRUE;
+  if ((r.bottom - r.top) < hostH / 3) return TRUE;
+  if ((r.bottom - r.top) < S(150)) return TRUE;
+  long area = (long)(r.right - r.left) * (r.bottom - r.top);
+  {
+    /* 7.x 里编辑器外面还包了一层同样大的容器（上面带列标尺：0 10 20…）。
+       容器比真编辑面还大一圈，按面积会选错 —— 选错就会把“列标尺”当成
+       第一条行号，色带整体偏一行。带纵向滚动条的那个才是真编辑面，优先选它。 */
+    SCROLLINFO si;
+    int hasScroll = 0;
+    ZeroMemory(&si, sizeof(si));
+    si.cbSize = sizeof(si);
+    si.fMask = SIF_ALL;
+    if (GetScrollInfo(h, SB_VERT, &si) && si.nMax > 0) hasScroll = 1;
+    if (hasScroll && !g_fbScroll) {
+      g_fbArea = area; g_fbBest = h; g_fbScroll = 1;
+    } else if (hasScroll == g_fbScroll && area > g_fbArea) {
+      g_fbArea = area; g_fbBest = h; g_fbScroll = hasScroll;
+    }
+  }
+  return TRUE;
+}
+
+static HWND findEditorFallback(HWND host)
+{
+  g_fbBest = NULL;
+  g_fbArea = 0;
+  g_fbScroll = 0;
+  EnumChildWindows(host, enumFallback, 0);
+  return g_fbBest;
+}
+
+/* 7.x 的编辑面外面还套了一层同尺寸的容器，滚动信息在内层子窗上。
+   找一个带纵向滚动范围、面积最大的子窗来读滚动位置。 */
+static HWND g_scBest;
+static long g_scArea;
+
+static BOOL CALLBACK enumScrollChild(HWND h, LPARAM lp)
+{
+  SCROLLINFO si;
+  RECT r;
+  long area;
+  (void)lp;
+  ZeroMemory(&si, sizeof(si));
+  si.cbSize = sizeof(si);
+  si.fMask = SIF_ALL;
+  if (!GetScrollInfo(h, SB_VERT, &si) || si.nMax <= 0) return TRUE;
+  if (!GetWindowRect(h, &r)) return TRUE;
+  area = (long)(r.right - r.left) * (r.bottom - r.top);
+  if (area > g_scArea) { g_scArea = area; g_scBest = h; }
+  return TRUE;
+}
+
+static HWND findScrollChild(HWND parent)
+{
+  SCROLLINFO si;
+  ZeroMemory(&si, sizeof(si));
+  si.cbSize = sizeof(si);
+  si.fMask = SIF_ALL;
+  if (GetScrollInfo(parent, SB_VERT, &si) && si.nMax > 0) return parent;
+  g_scBest = NULL;
+  g_scArea = 0;
+  EnumChildWindows(parent, enumScrollChild, 0);
+  return g_scBest;
 }
 
 /* 下方“编译日志 / 运行结果”面板：优先白名单类名，找不到再放宽到任意子窗口 */
@@ -861,6 +1031,7 @@ static int locateWindows(void)
   RECT r;
   g_best = NULL;
   g_bestArea = 0;
+  g_bestHasEd = 0;
   g_panelL = 0; g_panelT = 0; g_panelB = 0;
   EnumWindows(enumTop, 0);
   if (!g_best) return 0;
@@ -869,7 +1040,10 @@ static int locateWindows(void)
   g_hostL = r.left; g_hostT = r.top; g_hostR = r.right; g_hostB = r.bottom;
 
   g_hEdit = findChildClass(g_hHost, L"TSynEdit", 300, 100);
+  if (!g_hEdit) g_hEdit = findEditorFallback(g_hHost);   /* 7.x 的编辑器不是 TSynEdit */
   if (!g_hEdit) return 0;
+  g_hScroll = findScrollChild(g_hEdit);
+  if (!g_hScroll) g_hScroll = g_hEdit;
   GetWindowRect(g_hEdit, &r);
   g_edL = r.left; g_edT = r.top; g_edR = r.right; g_edB = r.bottom;
 
@@ -1074,24 +1248,30 @@ static int lineVisual(int s, int e, int *indent)
 
 /* 纵向滚动条读出来的行信息（1 起的第一可见行 / 总行数 / 一屏行数） */
 static int g_scrollTop = 0, g_scrollLines = 0, g_scrollPage = 0;
+static int g_scrollTopLine = 0;   /* 由滚动条换算出的第一可见行（0 = 不可用） */
+/* 用画面像素 + 编辑器全文拟合出来的第一可见行（0 = 没算出来）。
+   老版 Dev-C++ 打开文件后滚动条可能还没同步（画面停在第 10 行、pos 还是 1），
+   这个值比滚动条可靠，是“概率错行”的直接解药。 */
+static int g_fitTop = 0;
 
 /* 用编辑器的真实文本反推“当前第一可见行”：把每行字宽和画面上量到的行尾对齐 */
 static void detectTopLine(int *starts, int *ends, int count)
 {
   static int off[4096];
   int lc, i, t, rn = 0, bestT = 0, bestX0 = 0, bestCw = 0, scrollOK = 0;
-  double bestCost = 1e18;
+  double bestCost = 1e18, scrollCost = 1e18;
+  int scrollCostOK = 0;
   int ks[60], inkS[60], inkE[60], rowY[60], rowTop[60], rowBot[60], rowLim[60];
   int pitch = g_pitch > 0 ? g_pitch : S(22);
   int firstY = g_firstTextY;
   g_targetRowTop = g_targetRowBot = -1;
+  g_fitTop = 0;
   if (!readEditorText()) return;
   lc = textLineCount(off, 4096);
-  /* 滚动条可信（总行数对得上）时，它给的第一可见行最准；
-     像素拟合在代码高度重复的文件里容易整体错几行。 */
-  scrollOK = (g_scrollTop > 0 && g_scrollPage > 0 && g_scrollLines > 0 &&
-              abs(g_scrollLines - lc) <= 2);
-  if (scrollOK) g_topLine = g_scrollTop;
+  /* 滚动条换算出的第一可见行最准（6.x 直接是行号，7.x 由滚过的像素除以行距）；
+     文本像素拟合在代码高度重复的文件里容易整体错几行。 */
+  scrollOK = (g_scrollTopLine > 0);
+  if (scrollOK) g_topLine = g_scrollTopLine;
   for (i = 0; i < count && rn < 60; i++) {
     int a, b, lm = 0, k2;
     rowInkRange(starts[i], ends[i] - starts[i] + 1, &a, &b, &lm);
@@ -1166,9 +1346,21 @@ static void detectTopLine(int *starts, int *ends, int count)
     }
     if (cmp < 2 || cmp * 3 < rn * 2) continue;
     cost /= cmp;
+    if (scrollOK && t == g_scrollTopLine) { scrollCost = cost; scrollCostOK = 1; }
     if (cost < bestCost) { bestCost = cost; bestT = t; bestX0 = (int)x0; bestCw = (int)cw; }
   }
-  if (scrollOK && bestT > 0) bestT = g_scrollTop;
+  /* 画面拟合 vs 滚动条：两个候选都拿“行首缩进 + 行尾长度”跟画面对了一遍，
+     谁更贴合用谁。老版打开文件后滚动条偶尔还没同步，照滚动条标会整体错好几行；
+     但代码高度重复的文件里拟合也可能错位，所以只有拟合“明显更贴合”才推翻滚动条。 */
+  if (scrollOK) {
+    int useFit = 0;
+    if (bestT > 0 && bestCw > 0) {
+      if (!scrollCostOK) useFit = (bestCost <= S(6));
+      else if (bestCost + S(3) < scrollCost) useFit = 1;
+    }
+    if (!useFit) bestT = g_scrollTopLine;
+  }
+  g_fitTop = (bestT > 0 && bestCw > 0) ? bestT : 0;
   if (bestT > 0 && bestCw > 0) {
     int ph[60], pn = 0, bestD = 1 << 30, avg;
     long sum = 0;
@@ -1332,6 +1524,292 @@ static int captureEditor(void)
   return 1;
 }
 
+/* ---- 行号栏扫描（重做版） ----
+   行号栏是唯一可靠的“行坐标”：Dev-C++ 每一行都画行号，空行、红行、蓝行都不缺。
+   1) 用最左一列的颜色当行号栏底色，据此找出行号栏 / 代码区的分界；
+   2) 逐行统计数字笔画（比行号栏底色暗 14 以上的像素数），>=4 个才算一行数字。
+      左边的折叠线只有 1~2 像素宽，这样自然被排除（旧版就是被它搅成一整块）；
+   3) 全部数字带的上沿做线性回归 → 精确行距（缺几条也不影响）；
+   4) 相位 = 每条带上沿减掉“第几条×行距”后的平均。
+   结果：g_gutPitch 行距、g_gutPhase 相位、g_gutDigitH 数字高度。 */
+static void scanGutterBands(Canvas *c, int cw, int ch, int xlim,
+                            int bgR, int bgG, int bgB)
+{
+  int x, y, i, n, run = 0;
+  static int rowCnt[2048];
+  int top[GUT_MAX], bot[GUT_MAX], rn = 0;
+  int lumThr, codeLeft, gbR, gbG, gbB;
+  (void)bgR; (void)bgG; (void)bgB;
+  g_gutN = 0; g_gutOK = 0; g_gutPitch = 0; g_gutPhase = 0; g_gutDigitH = 0;
+  if (!c || cw < 40 || ch < 40) return;
+  if (xlim > cw) xlim = cw;
+  lumThr = 0; codeLeft = 0;
+
+  /* 1) 代码区底色 = 全图最亮的那个大峰（白底主题就是 255）。
+        行号栏底色一般比它暗一档（240），所以墨迹阈值取“亮底 - 25”：
+        行号栏底色不会被当成字，而 10/11/12 那种浅灰行号仍然算字。 */
+  {
+    static int hs[256];
+    long n2 = 0;
+    for (i = 0; i < 256; i++) hs[i] = 0;
+    for (y = 0; y < ch; y += 2)
+      for (x = 0; x < cw && x < S(400); x += 2) {
+        unsigned int v = c->px[(size_t)y * cw + x];
+        int r = (v >> 16) & 255, g2 = (v >> 8) & 255, b = v & 255;
+        hs[(r + g2 + b) / 3]++;
+        n2++;
+      }
+    if (n2 < 100) return;
+    lumThr = 0;
+    for (i = 255; i >= 0; i--) if (hs[i] * 10 >= n2) { lumThr = i; break; }
+    if (lumThr < 160) { glog(L"gut bail dark lum=%d", lumThr); return; }
+    gbR = gbG = gbB = lumThr;
+    lumThr -= 25;
+    if (lumThr < 80) lumThr = 80;
+  }
+
+  /* 2) 行号栏 / 代码区的分界：连续 10 列大部分像素都接近亮底 → 从这里进代码区 */
+  {
+    int lim = xlim < S(300) ? xlim : S(300);
+    int run2 = 0, bright = gbR;
+    codeLeft = lim;
+    for (x = S(6); x < lim; x++) {
+      int cntb = 0, k = 0;
+      for (y = ch / 6; y < ch * 5 / 6; y += 3) {
+        unsigned int v = c->px[(size_t)y * cw + x];
+        int r = (v >> 16) & 255, g2 = (v >> 8) & 255, b = v & 255;
+        if (abs((r + g2 + b) / 3 - bright) <= 6) cntb++;
+        k++;
+      }
+      if (k && cntb * 100 > k * 55) {
+        if (++run2 >= S(10)) { codeLeft = x - run2 + 1; break; }
+      } else run2 = 0;
+    }
+    if (codeLeft < S(24)) codeLeft = S(24);
+  }
+
+  /* 2.5) 行号栏底色跟代码区不是一个亮度：6.x 是 240，7.x 是 224。
+     墨迹阈值必须相对行号栏自己的底色算（取众数），否则 7.x 整条行号栏
+     都会被算成“字”，所有行黏成一大块。 */
+  {
+    static int gh[256];
+    long gn2 = 0;
+    int mode = 0;
+    for (i = 0; i < 256; i++) gh[i] = 0;
+    for (y = ch / 6; y < ch * 5 / 6; y += 2)
+      for (x = S(4); x < codeLeft - S(2); x++) {
+        unsigned int v = c->px[(size_t)y * cw + x];
+        int r = (v >> 16) & 255, g2 = (v >> 8) & 255, b = v & 255;
+        gh[(r + g2 + b) / 3]++;
+        gn2++;
+      }
+    if (gn2 < 50) { glog(L"gut bail nogutter codeLeft=%d", codeLeft); return; }
+    for (i = 0; i < 256; i++) if (gh[i] > mode) mode = gh[i];  /* 只用来找峰值位置 */
+    lumThr = 0;
+    for (i = 0; i < 256; i++) if (gh[i] == mode) { lumThr = i; break; }
+    lumThr -= 15;
+    if (lumThr < 80) lumThr = 80;
+    if (lumThr > gbR - 8) lumThr = gbR - 8;
+  }
+
+  /* 3) 逐行统计数字笔画。每一行先取本行的中位亮度当背景，再数比背景暗 15
+     以上的像素 —— Dev-C++ 会把“当前行”的整条行号栏涂灰，用固定阈值时
+     这一整行都会被算成字，整幅测量就被它带偏。
+     7.x 的行号笔画很细，一行常常只有 2~3 个深色像素，所以阈值取 3。 */
+  {
+    int gx0 = S(4), gx1 = codeLeft - S(2);
+    static int colDark[8192];
+    static int rowThr[2048];
+    int rows = ch < 2048 ? ch : 2048;
+    if (gx1 <= gx0 + 4) gx1 = gx0 + 5;
+    if (gx1 > cw) gx1 = cw;
+    if (gx1 > 8192) gx1 = 8192;
+    for (i = 0; i < gx1; i++) colDark[i] = 0;
+    for (y = 0; y < rows; y++) {
+      static int rh[256];
+      int acc = 0, med = 0, m = 0, cnt = gx1 - gx0;
+      int bgDark, thr;
+      for (i = 0; i < 256; i++) rh[i] = 0;
+      for (x = gx0; x < gx1; x++) {
+        unsigned int v = c->px[(size_t)y * cw + x];
+        int r = (v >> 16) & 255, g2 = (v >> 8) & 255, b = v & 255;
+        rh[(r + g2 + b) / 3]++;
+      }
+      for (i = 0; i < 256; i++) { acc += rh[i]; if (acc * 2 >= cnt) { med = i; break; } }
+      if (med <= 0) { rowCnt[y] = 0; rowThr[y] = 0; continue; }
+      /* 6.x 的行号栏里除了 224 的底色，还有一条 200 的折叠边栏。它比底色暗，
+         用“中位亮度-15”会把整条边栏都算成笔画，所有行黏成一整块。
+         取本行两个主要亮度里较暗的那个当背景，才是真正的底色。 */
+      {
+        int b2 = 0, b2c = 0, need = cnt / 8;
+        if (need < 2) need = 2;
+        for (i = 0; i < med - 7; i++)
+          if (rh[i] > b2c) { b2 = i; b2c = rh[i]; }
+        bgDark = (b2c >= need && b2 * 4 >= med * 3) ? b2 : med;
+      }
+      thr = bgDark - 15;
+      rowThr[y] = thr;
+      for (x = gx0; x < gx1; x++) {
+        unsigned int v = c->px[(size_t)y * cw + x];
+        int r = (v >> 16) & 255, g2 = (v >> 8) & 255, b = v & 255;
+        if ((r + g2 + b) / 3 < thr) { m++; if (x < 8192) colDark[x]++; }
+      }
+      rowCnt[y] = m;
+    }
+    /* 折叠栏的竖线、边框：几乎每一行都有 1~2 个深色像素，会被当成“每一行都有字”。
+       这种整列去掉，剩下的才是数字笔画。 */
+    for (x = gx0; x < gx1; x++)
+      if (colDark[x] * 10 >= rows * 6) colDark[x] = -1;
+    for (y = 0; y < rows; y++) {
+      int m2 = 0;
+      if (rowThr[y] <= 0) { rowCnt[y] = 0; continue; }
+      for (x = gx0; x < gx1; x++) {
+        unsigned int v;
+        int r, g2, b;
+        if (colDark[x] == -1) continue;
+        v = c->px[(size_t)y * cw + x];
+        r = (v >> 16) & 255; g2 = (v >> 8) & 255; b = v & 255;
+        if ((r + g2 + b) / 3 < rowThr[y]) m2++;
+      }
+      rowCnt[y] = m2;
+    }
+  }
+  for (y = 0; y < ch && y < 2048; y++) {
+    if (rowCnt[y] >= 2) {
+      if (!run) { if (rn < GUT_MAX) { top[rn] = y; bot[rn] = y; rn++; } run = 1; }
+      else if (rn) bot[rn - 1] = y;
+    } else run = 0;
+  }
+  /* 只留“一条数字”那么高的带子：更矮的是噪点/折叠框，更高的是整片底色 */
+  for (i = 0, n = 0; i < rn; i++) {
+    int h2 = bot[i] - top[i] + 1;
+    if (h2 < S(5) || h2 > S(46)) continue;
+    top[n] = top[i]; bot[n] = bot[i]; n++;
+  }
+  rn = n;
+  if (rn < 6) { glog(L"gut bail rn=%d codeLeft=%d", rn, codeLeft); return; }
+
+  /* 4) 行距：带子上沿（字顶）的间隔中位数 + 等距网格校验 */
+  {
+    int gaps[256], gn = 0, k, med, a, b2;
+    int idx[GUT_MAX], last = 0, use[GUT_MAX];
+    int anchor, pitch, good = 0;
+    int hs[256], hn = 0;
+    for (i = 1; i < rn && gn < 256; i++) {
+      int gp = top[i] - top[i - 1];
+      if (gp >= S(10) && gp <= S(80)) gaps[gn++] = gp;
+    }
+    if (gn < 5) return;
+    for (a = 1; a < gn; a++) {
+      int v = gaps[a];
+      for (b2 = a - 1; b2 >= 0 && gaps[b2] > v; b2--) gaps[b2 + 1] = gaps[b2];
+      gaps[b2 + 1] = v;
+    }
+    med = gaps[gn / 2];
+    if (med < S(10) || med > S(60)) return;
+    for (i = 0; i < rn; i++) {
+      k = (top[i] - top[0] + med / 2) / med;
+      idx[i] = k;
+      if (k > last) last = k;
+      use[i] = 1;
+    }
+    if (last < 4) return;
+    /* 锚点用“字顶 - 第几条×行距”的中位数：个别带子被噪声切开也不会把它带偏 */
+    {
+      int phs[GUT_MAX], pn = 0;
+      for (i = 0; i < rn; i++) phs[pn++] = top[i] - idx[i] * med;
+      for (a = 1; a < pn; a++) {
+        int v = phs[a];
+        for (b2 = a - 1; b2 >= 0 && phs[b2] > v; b2--) phs[b2 + 1] = phs[b2];
+        phs[b2 + 1] = v;
+      }
+      anchor = phs[pn / 2];
+    }
+    /* 最小二乘把行距精确到整数（整除误差会被行数放大），两轮剔除离群带 */
+    {
+      double pp = med, aa = anchor;
+      int pass;
+      for (pass = 0; pass < 3; pass++) {
+        double sk = 0, sy = 0, skk = 0, sky = 0;
+        int m = 0;
+        for (i = 0; i < rn; i++) {
+          if (!use[i]) continue;
+          k = (int)floor((top[i] - aa) / pp + 0.5);
+          idx[i] = k;
+          sk += k; sy += top[i]; skk += (double)k * k; sky += (double)k * top[i];
+          m++;
+        }
+        if (m < 5) break;
+        {
+          double den = m * skk - sk * sk;
+          if (den > 0.5) { pp = (m * sky - sk * sy) / den; aa = (sy - pp * sk) / m; }
+        }
+        for (i = 0; i < rn; i++) {
+          double d = top[i] - (aa + pp * idx[i]);
+          if (d < 0) d = -d;
+          use[i] = d <= 4 ? 1 : 0;
+        }
+      }
+      pitch = (int)(pp + 0.5);
+      if (pitch < S(10) || pitch > S(60)) return;
+      anchor = (int)(aa + 0.5);
+    }
+    for (i = 0; i < rn; i++) if (use[i]) good++;
+    if (good < 6 || good * 10 < rn * 6) return;
+    g_gutPitch = pitch;
+    g_gutFirstTop = anchor;          /* 第一可见行的字顶（绝对 y） */
+    g_gutPhase = anchor % pitch;
+    /* 5) 数字高度中位数（只用对上的带子）：色带靠它在行内摆正 */
+    for (i = 0; i < rn; i++) if (use[i] && hn < 256) hs[hn++] = bot[i] - top[i] + 1;
+    for (a = 1; a < hn; a++) {
+      int v = hs[a];
+      for (b2 = a - 1; b2 >= 0 && hs[b2] > v; b2--) hs[b2 + 1] = hs[b2];
+      hs[b2 + 1] = v;
+    }
+    g_gutDigitH = hn > 0 ? hs[hn / 2] : pitch / 2;
+    for (i = 0; i < rn && i < GUT_MAX; i++) { g_gutTop[i] = top[i]; g_gutBot[i] = bot[i]; }
+    g_gutN = rn;
+    g_gutOK = 1;
+  }
+}
+
+/* 调试：把刚抓到的编辑区存成 BMP，方便离线看行号栏长什么样 */
+static void dumpCaptureBmp(void)
+{
+  WCHAR flag[MAX_PATH], out[MAX_PATH];
+  BITMAPFILEHEADER fh;
+  BITMAPINFOHEADER ih;
+  HANDLE f;
+  DWORD wr = 0;
+  int y, rowBytes;
+  wsprintfW(flag, L"%s\\state\\dumpcap.txt", gHome);
+  if (GetFileAttributesW(flag) == INVALID_FILE_ATTRIBUTES) return;
+  if (!g_capReady) return;
+  wsprintfW(out, L"%s\\state\\cap.bmp", gHome);
+  rowBytes = g_capW * 4;
+  ZeroMemory(&fh, sizeof(fh));
+  ZeroMemory(&ih, sizeof(ih));
+  ih.biSize = sizeof(ih);
+  ih.biWidth = g_capW;
+  ih.biHeight = g_capH;
+  ih.biPlanes = 1;
+  ih.biBitCount = 32;
+  ih.biCompression = BI_RGB;
+  ih.biSizeImage = rowBytes * g_capH;
+  fh.bfType = 0x4D42;
+  fh.bfOffBits = sizeof(fh) + sizeof(ih);
+  fh.bfSize = fh.bfOffBits + ih.biSizeImage;
+  f = CreateFileW(out, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (f == INVALID_HANDLE_VALUE) return;
+  WriteFile(f, &fh, sizeof(fh), &wr, NULL);
+  WriteFile(f, &ih, sizeof(ih), &wr, NULL);
+  for (y = g_capH - 1; y >= 0; y--)
+    WriteFile(f, g_cap.px + (size_t)y * g_capW, rowBytes, &wr, NULL);
+  CloseHandle(f);
+  DeleteFileW(flag);
+  glog(L"dump cap.bmp %dx%d", g_capW, g_capH);
+}
+
 /* 通过扫描像素找到“文字行”的起点与行距 */
 static void measureLines(void)
 {
@@ -1340,7 +1818,8 @@ static void measureLines(void)
   int starts[80], ends[80], count = 0;
   int thr, minH, limR;
   g_colRowN = 0;
-  if (!g_capReady) { g_pitch = S(22); g_firstTextY = S(6); g_inkRight = 0; g_lastCodeY = 0; return; }
+  if (!g_capReady) { g_pitch = S(22); g_firstTextY = S(6); g_baseY = 0; g_inkRight = 0; g_lastCodeY = 0; return; }
+  dumpCaptureBmp();
   sw = w / 2;
   if (sw < 300) sw = w;
   x0 = S(70);
@@ -1504,14 +1983,52 @@ static void measureLines(void)
        同时要求下一轮重新量，恢复后能自动补上 */
     g_forceMeasure = 1;
     if (g_pitch > S(8)) return;
-    g_pitch = S(22); g_firstTextY = S(6); g_inkRight = inkRight; g_lastCodeY = 0;
+    g_pitch = S(22); g_firstTextY = S(6); g_baseY = 0; g_inkRight = inkRight; g_lastCodeY = 0;
     if (g_codeX0 <= 0) g_codeX0 = S(56);
     if (g_charW <= 0) g_charW = S(9);
     return;
   }
 
-  /* 行距：对行轮廓做自相关，找让“文字行对文字行”最吻合的周期（空白行不影响） */
+  /* ---- 行号栏：每一行都画着一个行号，数字的上下沿就是这一行的上下沿 ---- */
+  scanGutterBands(&g_cap, w, h, w, bgR, bgG, bgB);
+
+  /* 行号栏量出来的行距是精确值（整数像素），相位也是精确的：直接采用。
+     之后滚动只用“滚动条位移”推算，绝不累加，所以不会越滚越偏。 */
   int keepGeo = 0;
+  if (g_gutOK && g_gutPitch > S(8)) {
+    int adopt = 1, pad;
+    if (!g_measureTrust && g_pitch > S(8)) {
+      int d = g_gutPitch - g_pitch;
+      if (d < 0) d = -d;
+      if (d * 100 > g_pitch * 12) adopt = 0;   /* 行距突然变了：先不信这一次 */
+    }
+    if (adopt) g_pitch = g_gutPitch;
+    pad = (g_pitch - (g_gutDigitH > 0 ? g_gutDigitH : g_pitch / 2)) / 2;
+    if (pad < 0) pad = 0;
+    /* 第一可见行的行顶 = 它的数字带上沿 - 行内留白（测量当时的屏幕 y） */
+    g_firstTextY = g_gutFirstTop - pad;
+    /* 顶行的数字被裁掉一半时（像素滚动到半行），它的上沿不可信，用下一行倒推。
+       只有“下一行确实隔着一个行距”才认，防止最上面那条是杂带时把基准带偏。 */
+    if (g_gutFirstTop <= 1 && g_gutN > 1) {
+      int d2 = g_gutTop[1] - g_gutTop[0];
+      if (d2 >= g_pitch / 2 && d2 <= g_pitch * 3 / 2)
+        g_firstTextY = g_gutTop[1] - pad - g_pitch;
+    }
+    /* 换算成“第 1 行在文档里的 y”：第一可见行 = 1 + 整行滚过的行数，
+       所以在屏幕 y 上只差“不足一行的余数”。之后每一帧
+       y = baseY + (行号-1)×行距 - 当前滚过的像素，纯绝对量，绝不会越滚越偏。
+       只在“刚量准/尺寸变了”或“抓屏时没有滚动”时才更新基准：
+       滚动途中抓到的画面可能和滚动位置差一帧，拿它更新基准会留下半行误差。 */
+    if (g_measureTrust || g_baseY <= 0 || g_measScrollStable)
+      g_baseY = g_firstTextY + (g_pitch > 0 ? g_scrollPx % g_pitch : 0);
+    keepGeo = 1;
+  } else if (!g_measureTrust && g_baseY > 0 && g_pitch > S(8)) {
+    /* 这次行号栏没扫到（窗口被别的程序盖住 / 正在滚动 / 画面偏暗），
+       但之前已经量准过：直接沿用旧几何，绝不能用自相关的结果覆盖 ——
+       那种结果时不时会差半行或一整行，正是“滑回顶部就偏一行”的来源。 */
+    keepGeo = 1;
+  } else {
+  /* 行距：对行轮廓做自相关，找让“文字行对文字行”最吻合的周期（空白行不影响） */
   {
     int L, pitch = 0;
     long long best = -1;
@@ -1553,12 +2070,12 @@ static void measureLines(void)
       int d = pitch - g_pitch;
       if (d < 0) d = -d;
       if (count < 6 || d * 100 > g_pitch * 12) {
-        glog(L"measure pitch rejected raw=%d keep=%d count=%d", pitch, g_pitch, count);
         pitch = g_pitch; keepGeo = 1;
       }
     }
     g_pitch = pitch;
   }
+  }   /* end: 没有行号栏时才走自相关 */
 
   /* 首行相位：让每一行的文字顶都落在同一个偏移上（文字最密的那一行对齐） */
   if (!keepGeo) {
@@ -1577,16 +2094,20 @@ static void measureLines(void)
     }
     g_firstTextY = bestP;
   }
-  if (g_firstTextY < 0) g_firstTextY = 0;
+  if (!keepGeo && g_firstTextY < 0) g_firstTextY = 0;
+  if (!keepGeo) g_baseY = 0;   /* 没拿到行号栏网格：退回旧算法 */
+  detectTopLine(starts, ends, count);
+  /* 变色行（Dev-C++ 的红色错误行 / 蓝色选中行）换算成绝对行号：
+     色带如果正好标的是这一行，就直接用它的真实上下沿，像素级贴合。 */
   {
-    static int logged = 0;
-    if (!logged) {
-      logged = 1;
-      glog(L"measure count=%d pitch=%d firstY=%d h=%d sw=%d x0=%d thr=%d bg=%d,%d,%d",
-           count, g_pitch, g_firstTextY, h, sw, x0, thr, bgR, bgG, bgB);
+    int ci, pl = g_pitch > S(8) ? g_pitch : S(22);
+    for (ci = 0; ci < g_colRowN; ci++) {
+      int mid = (g_colRowTop[ci] + g_colRowBot[ci]) / 2;
+      int r = (mid - g_firstTextY) / pl;
+      if (r < 0) r = 0;
+      g_colLine[ci] = g_topLine + r;
     }
   }
-  detectTopLine(starts, ends, count);
   if (g_codeX0 <= 0) g_codeX0 = S(56);
   if (g_charW <= 0) g_charW = S(9);
   g_inkRight = inkRight > 0 ? inkRight : maxInkX;
@@ -1596,20 +2117,71 @@ static void measureLines(void)
 static int readTopLine(void)
 {
   SCROLLINFO si;
+  int edH = g_edB - g_edT;
+  g_scrollTopLine = 0;
   ZeroMemory(&si, sizeof(si));
   si.cbSize = sizeof(si);
   si.fMask = SIF_ALL;
-  if (g_hEdit && GetScrollInfo(g_hEdit, SB_VERT, &si)) {
-    /* TSynEdit 的纵向滚动条是按“行”走的：nPos 就是第一可见行（1 起）、
-       nMax 是总行数、nPage 是一屏行数。这套数字直接读，比像素拟合准。 */
+  if (g_hScroll && GetScrollInfo(g_hScroll, SB_VERT, &si)) {
+    /* 老版（6.x，TSynEdit）的纵向滚动条按“行”走：nPos 就是第一可见行（1 起）、
+       nMax 是总行数、nPage 是一屏行数（几十）。
+       新版（7.x）是“像素滚动”：nPos 是滚过的像素数、nPage 是一屏像素数（几百），
+       要除以行距才是第一可见行。 */
     g_scrollTop = si.nPos;
     g_scrollLines = si.nMax;
     g_scrollPage = si.nPage;
-    if (si.nPos > 0) return si.nPos;
+    if (si.nPage > 120) {
+      /* 像素滚动：nPos 本身就是滚过的像素，和行距同一套坐标。
+         第一可见行 = 1 + 已经整行滚过去的行数（向下取整，别四舍五入，
+         否则滚到半行时会来回跳一行）。 */
+      g_scrollPx = si.nPos > 0 ? si.nPos : 0;
+      if (g_pitch > S(8))
+        g_scrollTopLine = 1 + g_scrollPx / g_pitch;
+      else
+        g_scrollTopLine = 1;
+    } else {
+      g_scrollTopLine = si.nPos > 0 ? (int)si.nPos : 1;
+      g_scrollPx = (g_scrollTopLine - 1) * (g_pitch > 0 ? g_pitch : 0);
+    }
   } else {
     g_scrollTop = 0; g_scrollLines = 0; g_scrollPage = 0;
+    g_scrollPx = 0;
   }
-  return 1;
+  return g_scrollTopLine > 0 ? g_scrollTopLine : 1;
+}
+
+/* 当前第一可见行：有锚点就按“滚了多少”推（精确、跟手）；
+   没有锚点才退回滚动条绝对换算。 */
+static int topLineNow(void)
+{
+  int d, q;
+  /* 滚到最上面：第一可见行永远是第 1 行（锚点推算在半行余数上可能抖一行） */
+  if (g_scrollPx <= 0) return 1;
+  if (!g_ancValid || g_pitch <= S(8))
+    return g_scrollTopLine > 0 ? g_scrollTopLine : 1;
+  d = g_scrollTop - g_ancPos;
+  if (g_scrollPage > 120) {
+    /* 像素滚动：向下过程中，滚满一个行距才换下一行 */
+    if (d >= 0) q = d / g_pitch;
+    else q = -((-d + g_pitch - 1) / g_pitch);
+  } else {
+    q = d;   /* 6.x 的 nPos 本来就是“第几行” */
+  }
+  q += g_ancLine;
+  return q > 0 ? q : 1;
+}
+
+/* 用“第一可见行 + 滚动条位置”这一对重新标定 */
+static void anchorScrollAt(int line)
+{
+  g_ancLine = line > 0 ? line : 1;
+  g_ancPos = g_scrollTop;
+  g_ancValid = 1;
+}
+
+static void anchorScroll(void)
+{
+  anchorScrollAt(g_scrollTopLine);
 }
 
 /* ------------------------------------------------------------------ 绘制：编辑区玻璃 */
@@ -1759,24 +2331,24 @@ static void renderCollapsed(void)
 {
   Canvas c;
   WCHAR t[220], ell[220];
-  int P = S(7), H = S(24), tw, W, maxw;
+  int P = CS(7), H = CS(24), tw, W, maxw;
   int lineH = textLineH(g_measureDC, g_fBody);
   cardShortTitle(t, 220);
-  maxw = (g_colW > 0 ? g_colW : S(240)) - P * 2 - S(22);
-  if (maxw < S(60)) maxw = S(60);
+  maxw = (g_colW > 0 ? g_colW : CS(240)) - P * 2 - CS(22);
+  if (maxw < CS(60)) maxw = CS(60);
   copyEllipsis(g_measureDC, g_fBody, t, maxw, ell, 220);
   tw = textW(g_measureDC, g_fBody, ell);
-  W = P + S(9) + tw + S(6) + S(12) + P;
+  W = P + CS(9) + tw + CS(6) + CS(12) + P;
   if (g_colW > 0 && W > g_colW) W = g_colW;
   if (!cvCreate(&c, W, H)) return;
   cvFill(&c, 0, 0, W, H, 255, 253, 248, 226);
   cvRect(&c, 0, 0, W, H, 34, 38, 42, 190);
-  cvFill(&c, 0, 0, S(3), H, 198, 58, 58, 255);              /* 左侧红边 */
-  cvFill(&c, P, (H - S(5)) / 2, S(5), S(5), 198, 58, 58, 255); /* 小红点 */
-  drawTextAt(&c, c.hdc, P + S(9), (H - lineH) / 2 + S(1), ell, g_fBody, 34, 38, 42, 255);
-  cvChevron(&c, W - P - S(10), (H - S(8)) / 2, S(4), 0, 105, 111, 118, 255);
+  cvFill(&c, 0, 0, CS(3), H, 198, 58, 58, 255);              /* 左侧红边 */
+  cvFill(&c, P, (H - CS(5)) / 2, CS(5), CS(5), 198, 58, 58, 255); /* 小红点 */
+  drawTextAt(&c, c.hdc, P + CS(9), (H - lineH) / 2 + CS(1), ell, g_fBody, 34, 38, 42, 255);
+  cvChevron(&c, W - P - CS(10), (H - CS(8)) / 2, CS(4), 0, 105, 111, 118, 255);
   g_cardHeadH = H;
-  present(&c, g_hCard, g_cardX, g_cardY);
+  present(&c, g_hCard, cardPX(), cardPY());
   cvFree(&c);
 }
 
@@ -1784,8 +2356,8 @@ static void renderCollapsed(void)
 static void renderOkCard(void)
 {
   Canvas c;
-  int W = g_colW > 0 ? g_colW : S(300), P = S(9);
-  int hH = S(30);
+  int W = g_colW > 0 ? g_colW : CS(300), P = CS(9);
+  int hH = CS(30);
   int lineHBody = textLineH(g_measureDC, g_fBody);
   int lineHHead = textLineH(g_measureDC, g_fHead);
   int lineHSmall = textLineH(g_measureDC, g_fSmall);
@@ -1814,8 +2386,8 @@ static void renderOkCard(void)
   cvFill(&c, 0, 0, W, total, 255, 253, 248, 244);
   cvRect(&c, 0, 0, W, total, 34, 38, 42, 255);
   cvFill(&c, 1, 1, W - 2, hH - 1, 236, 246, 238, 250);       /* 淡绿标题栏 */
-  cvFill(&c, 1, hH - 1, W - 2, S(2), 34, 38, 42, 255);
-  cvFill(&c, 0, 0, S(3), total, 46, 140, 92, 255);            /* 左侧绿边 */
+  cvFill(&c, 1, hH - 1, W - 2, CS(2), 34, 38, 42, 255);
+  cvFill(&c, 0, 0, CS(3), total, 46, 140, 92, 255);            /* 左侧绿边 */
 
   {
     const WCHAR *t = gd.title[0] ? gd.title : L"运行结果";
@@ -1823,14 +2395,14 @@ static void renderOkCard(void)
     _snwprintf(head, 200, L"小D · %s", t);
     head[200] = 0;
     hw = textW(c.hdc, g_fHead, head);
-    if (hw > W - S(50)) {
+    if (hw > W - CS(50)) {
       WCHAR ell[220];
-      copyEllipsis(c.hdc, g_fHead, head, W - S(56), ell, 220);
-      drawTextAt(&c, c.hdc, P, (hH - lineHHead) / 2 + S(2), ell, g_fHead, 30, 80, 52, 255);
+      copyEllipsis(c.hdc, g_fHead, head, W - CS(56), ell, 220);
+      drawTextAt(&c, c.hdc, P, (hH - lineHHead) / 2 + CS(2), ell, g_fHead, 30, 80, 52, 255);
     } else {
-      drawTextAt(&c, c.hdc, P, (hH - lineHHead) / 2 + S(2), head, g_fHead, 30, 80, 52, 255);
+      drawTextAt(&c, c.hdc, P, (hH - lineHHead) / 2 + CS(2), head, g_fHead, 30, 80, 52, 255);
     }
-    cvChevron(&c, W - S(20), (hH - S(8)) / 2, S(4), 1, 105, 111, 118, 255);
+    cvChevron(&c, W - CS(20), (hH - CS(8)) / 2, CS(4), 1, 105, 111, 118, 255);
   }
   g_cardHeadH = hH;
 
@@ -1840,22 +2412,22 @@ static void renderOkCard(void)
     y += lineHBody;
   }
   if (nTips) {
-    y += S(2);
+    y += CS(2);
     for (i = 0; i < nTips; i++) {
       drawTextAt(&c, c.hdc, P, y, lines[i], g_fSmall, 76, 96, 84, 255);
       y += lineHBody;
     }
   }
-  present(&c, g_hCard, g_cardX, g_cardY);
+  present(&c, g_hCard, cardPX(), cardPY());
   cvFree(&c);
 }
 
 static void renderCard(void)
 {
   Canvas c;
-  int W = g_colW > 0 ? g_colW : S(300), P = S(9);
-  int capH = (g_edB - g_edT) - S(16);
-  int hH = S(30);
+  int W = g_colW > 0 ? g_colW : CS(300), P = CS(9);
+  int capH = (g_edB - g_edT) - CS(16);
+  int hH = CS(30);
   int y, i, n, total;
   WCHAR lines[16][1024];
   int lineHBody, lineHHead, lineHSmall, lineHMono;
@@ -1864,7 +2436,7 @@ static void renderCard(void)
   if (!gd.on || !wcscmp(gd.kind, L"busy") || g_cardHidden) { hideWindow(g_hCard); return; }
   if (g_collapsed) { renderCollapsed(); return; }
   if (gd.ok) { renderOkCard(); return; }
-  if (capH > S(320)) capH = S(320);
+  if (capH > CS(320)) capH = CS(320);
 
   lineHHead = textLineH(g_measureDC, g_fHead);
   lineHBody = textLineH(g_measureDC, g_fBody);
@@ -1872,10 +2444,10 @@ static void renderCard(void)
   lineHMono = textLineH(g_measureDC, g_fMono);
 
   /* 先测总高度：原因(≤3行) + 改法(≤3行) + 代码(≤4行) + 技巧(≤2行) */
-  total = hH + P * 2 + S(16) + 0;
+  total = hH + P * 2 + CS(16) + 0;
   total += lineHBody * 3 + lineHSmall;
   total += lineHSmall + lineHBody * 3;
-  total += lineHMono * 2 + S(8);
+  total += lineHMono * 2 + CS(8);
   total += lineHSmall + lineHBody * 2;
 
   if (total > capH) { total = capH; }
@@ -1887,7 +2459,7 @@ static void renderCard(void)
   cvRect(&c, 0, 0, W, total, 34, 38, 42, 255);
   /* 标题栏 */
   cvFill(&c, 1, 1, W - 2, hH - 1, 242, 238, 228, 250);
-  cvFill(&c, 1, hH - 1, W - 2, S(2), 34, 38, 42, 255);
+  cvFill(&c, 1, hH - 1, W - 2, CS(2), 34, 38, 42, 255);
 
   {
     WCHAR head[220];
@@ -1898,14 +2470,14 @@ static void renderCard(void)
       wcsncpy(head, L"小D · 代码体检", 200);
     head[200] = 0;
     hw = textW(c.hdc, g_fHead, head);
-    if (hw > W - S(50)) {
+    if (hw > W - CS(50)) {
       WCHAR t[220];
-      copyEllipsis(c.hdc, g_fHead, head, W - S(56), t, 220);
-      drawTextAt(&c, c.hdc, P, (hH - lineHHead) / 2 + S(2), t, g_fHead, 34, 38, 42, 255);
+      copyEllipsis(c.hdc, g_fHead, head, W - CS(56), t, 220);
+      drawTextAt(&c, c.hdc, P, (hH - lineHHead) / 2 + CS(2), t, g_fHead, 34, 38, 42, 255);
     } else {
-      drawTextAt(&c, c.hdc, P, (hH - lineHHead) / 2 + S(2), head, g_fHead, 34, 38, 42, 255);
+      drawTextAt(&c, c.hdc, P, (hH - lineHHead) / 2 + CS(2), head, g_fHead, 34, 38, 42, 255);
     }
-    cvChevron(&c, W - S(20), (hH - S(8)) / 2, S(4), 1, 105, 111, 118, 255);
+    cvChevron(&c, W - CS(20), (hH - CS(8)) / 2, CS(4), 1, 105, 111, 118, 255);
   }
 
   g_cardHeadH = hH;
@@ -1917,7 +2489,7 @@ static void renderCard(void)
     wsprintfW(label, L"① 错误原因");
     if (y + lineHSmall < total) {
       drawTextAt(&c, c.hdc, P, y, label, g_fSmall, 176, 52, 60, 255);
-      y += lineHSmall + S(2);
+      y += lineHSmall + CS(2);
       n = wrapLines(c.hdc, g_fBody, gd.cause, W - P * 2, &lines[0][0], 1024, 4, 240);
       for (i = 0; i < n; i++) {
         if (y + lineHBody > total - P) break;
@@ -1927,7 +2499,7 @@ static void renderCard(void)
     }
   }
 
-  y += S(6);
+  y += CS(6);
   /* ② 具体改这里 */
   {
     WCHAR label[120];
@@ -1935,7 +2507,7 @@ static void renderCard(void)
     wsprintfW(label, L"② 具体改这里");
     if (y + lineHSmall < total) {
       drawTextAt(&c, c.hdc, P, y, label, g_fSmall, 44, 122, 111, 255);
-      y += lineHSmall + S(2);
+      y += lineHSmall + CS(2);
     }
     wline[0] = 0;
     if (gd.where[0]) { wcsncpy(wline, gd.where, 600); wline[600] = 0; }
@@ -1953,10 +2525,10 @@ static void renderCard(void)
         wcsncpy(tmp, L"· ", 700);
         tmp[700] = 0;
         wcsncat(tmp, step, 710);
-        n = wrapLines(c.hdc, g_fBody, tmp, W - P * 2 - S(6), &lines[0][0], 1024, 2, 240);
+        n = wrapLines(c.hdc, g_fBody, tmp, W - P * 2 - CS(6), &lines[0][0], 1024, 2, 240);
         for (i = 0; i < n && cnt < 2; i++, cnt++) {
           if (y + lineHBody > total - P) break;
-          drawTextAt(&c, c.hdc, P + S(4), y, lines[i], g_fBody, 68, 74, 80, 255);
+          drawTextAt(&c, c.hdc, P + CS(4), y, lines[i], g_fBody, 68, 74, 80, 255);
           y += lineHBody;
         }
       }
@@ -1976,18 +2548,18 @@ static void renderCard(void)
           start = k + 1;
         }
       }
-      boxH = cl * lineHMono + S(8);
+      boxH = cl * lineHMono + CS(8);
       if (y + boxH > total - P) boxH = (total - P - y);
       if (boxH > lineHMono) {
         cvFill(&c, P, y, W - P * 2, boxH, 35, 38, 42, 246);
         for (k = 0; k < cl; k++) {
-          int ty = y + S(4) + k * lineHMono;
+          int ty = y + CS(4) + k * lineHMono;
           WCHAR ell[600];
           if (ty + lineHMono > y + boxH) break;
-          copyEllipsis(c.hdc, g_fMono, codeLines[k], W - P * 2 - S(10), ell, 600);
-          drawTextAt(&c, c.hdc, P + S(6), ty, ell, g_fMono, 234, 229, 218, 255);
+          copyEllipsis(c.hdc, g_fMono, codeLines[k], W - P * 2 - CS(10), ell, 600);
+          drawTextAt(&c, c.hdc, P + CS(6), ty, ell, g_fMono, 234, 229, 218, 255);
         }
-        y += boxH + S(6);
+        y += boxH + CS(6);
       }
     }
   }
@@ -1997,7 +2569,7 @@ static void renderCard(void)
     WCHAR label[80], tips[400];
     wsprintfW(label, L"③ 知识点 · 技巧");
     drawTextAt(&c, c.hdc, P, y, label, g_fSmall, 47, 95, 143, 255);
-    y += lineHSmall + S(2);
+    y += lineHSmall + CS(2);
     tips[0] = 0;
     if (gd.tips[0]) {
       int k;
@@ -2024,7 +2596,7 @@ static void renderCard(void)
   headRect.left = 0; headRect.top = 0; headRect.right = W; headRect.bottom = hH;
   (void)headRect;
 
-  present(&c, g_hCard, g_cardX, g_cardY);
+  present(&c, g_hCard, cardPX(), cardPY());
   cvFree(&c);
 }
 
@@ -2061,7 +2633,7 @@ static void renderStrip(void)
     drawTextAt(&c, c.hdc, x, P, t, g_fHead, 34, 38, 42, 255);
     copyEllipsis(c.hdc, g_fBody, L"等待编译结果…", tw, t, 400);
     drawTextAt(&c, c.hdc, x, P + hHead + S(3), t, g_fBody, 91, 97, 103, 255);
-    present(&c, g_hStrip, g_stripX, g_stripY);
+    present(&c, g_hStrip, stripPX(), stripPY());
     cvFree(&c);
     return;
   }
@@ -2101,18 +2673,45 @@ static void renderStrip(void)
     if (t[0]) drawTextAt(&c, c.hdc, x, y, t, g_fBody, 44, 122, 111, 255);
   }
 
-  present(&c, g_hStrip, g_stripX, g_stripY);
+  present(&c, g_hStrip, stripPX(), stripPY());
   cvFree(&c);
 }
 
-/* ------------------------------------------------------------------ 布局 */
+/* 没有错误时：在代码下方的空白处放一条绿色提示，不标行、不弹讲解卡 */
+static void renderOkHint(void)
+{
+  Canvas c;
+  int w = g_stripW, h = g_stripH;
+  int P = CS(10), x, tw, hHead;
+  WCHAR t[200];
+
+  if (w < 40 || h < 20) return;
+  if (!cvCreate(&c, w, h)) return;
+
+  cvFill(&c, 0, 0, w, h, 246, 252, 247, 242);
+  cvFill(&c, 0, 0, S(4), h, 60, 160, 90, 255);
+  cvRect(&c, 0, 0, w, h, 34, 38, 42, 170);
+
+  hHead = textLineH(c.hdc, g_fHead);
+  x = P + S(6);
+  tw = w - x - P;
+  if (tw < S(40)) tw = S(40);
+
+  copyEllipsis(c.hdc, g_fHead, L"代码正常，请运行测试", tw, t, 200);
+  drawTextAt(&c, c.hdc, x, P, t, g_fHead, 36, 120, 70, 255);
+  copyEllipsis(c.hdc, g_fBody, L"没有发现语法错误，运行看看结果", tw, t, 200);
+  drawTextAt(&c, c.hdc, x, P + hHead + CS(3), t, g_fBody, 91, 97, 103, 255);
+
+  present(&c, g_hStrip, stripPX(), stripPY());
+  cvFree(&c);
+}
 
 /* 提示条的高度（内容） */
 static int stripHeight(void)
 {
   int lh = textLineH(g_measureDC, g_fBody);
   int lhHead = textLineH(g_measureDC, g_fHead);
-  int th = S(10) + lhHead + S(3) + lh * 2 + S(10);
+  int th = CS(10) + lhHead + CS(3) + lh * 2 + CS(10);
   return th;
 }
 
@@ -2137,132 +2736,67 @@ static int textInkRight(void)
   return (g_codeX0 > 0 ? g_codeX0 : S(56)) + maxc * g_charW;
 }
 
-/* ---------------------------------------------- 绘制：编译结果面板上方的监测条 */
-
-static int g_memoStripH = 0;
-static int g_sigMemoH = -999, g_sigMemoL = -999, g_sigMemoT = -999;
-
-/* Dev-C++ 的编译日志区顶上盖一条 2 行的玻璃条：
-   第一行写“第几行 · 什么错”，第二行写原因/建议。
-   下面仍然是 Dev-C++ 自己的编译输出，不会被挡住。 */
-static void renderMemoStrip(void)
-{
-  Canvas c;
-  int w = g_memoR - g_memoL;
-  int h = g_memoB - g_memoT;
-  int P = S(9), y, x, tw, hHead, hBody, stripH;
-  WCHAR head[520], t[520];
-
-  if (w < S(160) || h < S(48)) { hideWindow(g_hMemoStrip); g_memoStripH = 0; return; }
-  /* 助手面板在右边时别画到它下面 */
-  if (g_panelL > g_memoL) {
-    int pl = g_panelL - g_memoL - S(8);
-    if (pl > S(160) && pl < w) w = pl;
-  }
-  stripH = S(64);
-  if (stripH > h - S(6)) stripH = h - S(6);
-  if (stripH < S(36)) stripH = S(36);
-  if (!cvCreate(&c, w, stripH)) return;
-
-  cvFill(&c, 0, 0, w, stripH, 255, 253, 248, 236);
-  cvFill(&c, 0, 0, S(5), stripH, 226, 100, 59, 255);
-  cvRect(&c, 0, 0, w, stripH, 34, 38, 42, 200);
-
-  if (!gd.on) { present(&c, g_hMemoStrip, g_memoL, g_memoT); cvFree(&c); g_memoStripH = stripH; return; }
-
-  hHead = textLineH(c.hdc, g_fHead);
-  hBody = textLineH(c.hdc, g_fBody);
-  x = S(9) + S(6);
-  tw = w - x - P;
-  if (tw < S(80)) tw = S(80);
-  y = P;
-
-  if (!wcscmp(gd.kind, L"busy")) {
-    copyEllipsis(c.hdc, g_fHead, gd.title[0] ? gd.title : L"正在编译…", tw, t, 400);
-    drawTextAt(&c, c.hdc, x, y, t, g_fHead, 34, 38, 42, 255);
-    copyEllipsis(c.hdc, g_fBody, L"小D 正在盯编译结果…", tw, t, 400);
-    drawTextAt(&c, c.hdc, x, y + hHead + S(2), t, g_fBody, 91, 97, 103, 255);
-  } else {
-    if (gd.ok)
-      wsprintfW(head, L"[通过] %s", gd.title[0] ? gd.title : L"编译通过");
-    else if (gd.line > 0)
-      wsprintfW(head, L"[错误] 第 %d 行 · %s", gd.line, gd.title[0] ? gd.title : L"编译失败");
-    else
-      wsprintfW(head, L"[错误] %s", gd.title[0] ? gd.title : L"编译失败");
-    head[400] = 0;
-    copyEllipsis(c.hdc, g_fHead, head, tw, t, 400);
-    drawTextAt(&c, c.hdc, x, y, t, g_fHead,
-               gd.ok ? 60 : 176, gd.ok ? 122 : 52, gd.ok ? 74 : 60, 255);
-
-    y += hHead + S(2);
-    if (y + hBody <= stripH - S(2)) {
-      const WCHAR *cause = gd.cause[0] ? gd.cause : (gd.where[0] ? gd.where : L"看下面的编译输出");
-      copyEllipsis(c.hdc, g_fBody, cause, tw, t, 400);
-      drawTextAt(&c, c.hdc, x, y, t, g_fBody, 34, 38, 42, 255);
-    }
-  }
-
-  present(&c, g_hMemoStrip, g_memoL, g_memoT);
-  g_memoStripH = stripH;
-  cvFree(&c);
-}
-
 static void layout(void)
 {
   int edW = g_edR - g_edL, edH = g_edB - g_edT;
   int line = gd.line;
+  int okMode = gd.on && gd.ok && wcscmp(gd.kind, L"busy") != 0;
   g_bandLineY = -1; g_bandLineH = 0; g_bandFullRow = 0;
+
+  if (okMode) {
+    /* 没有错误：不标行、不弹讲解卡，只在代码下方的空白处放一条
+       “代码正常，请运行测试”，不压住代码。 */
+    int hHead = textLineH(g_measureDC, g_fHead);
+    int hBody = textLineH(g_measureDC, g_fBody);
+    int w1 = textW(g_measureDC, g_fHead, L"代码正常，请运行测试");
+    int w2 = textW(g_measureDC, g_fBody, L"没有发现语法错误，运行看看结果");
+    int w = (w1 > w2 ? w1 : w2) + CS(30);
+    int h = CS(10) + hHead + CS(3) + hBody + CS(10);
+    int x, y;
+    RECT wa;
+    if (w < CS(190)) w = CS(190);
+    if (h < CS(46)) h = CS(46);
+    if (w > edW - S(20)) w = edW - S(20);
+    /* 放在“代码区”里，别压住左边的行号栏 */
+    x = g_edL + (g_codeX0 > 0 ? g_codeX0 : S(60)) + S(20);
+    y = g_edT + (g_lastCodeY > 0 ? g_lastCodeY : edH / 2) + S(12);
+    if (y + h > g_edB - S(10)) y = g_edB - S(10) - h;
+    if (y < g_edT + S(8)) y = g_edT + S(8);
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
+    if (x + w > wa.right - S(8)) x = wa.right - S(8) - w;
+    if (x < wa.left + S(8)) x = wa.left + S(8);
+    g_stripX = x; g_stripY = y; g_stripW = w; g_stripH = h;
+    g_cardX = g_stripX; g_cardY = g_stripY;
+    return;
+  }
 
   if (line > 0) {
     int rel = line - g_topLine;
-    int y, hh;
-    int predY = g_firstTextY + rel * g_pitch - S(3);
-    /* 实测行范围已经按“缩进 + 行尾长度”和源码逐字比对过，就是出错行本身，
-       只要位置没偏出两行就直接用它的真实上下沿，色带不会上下漂。 */
-    int useMeasured = 0;
-    if (g_targetRowTop >= 0 && rel >= 0 && g_targetRowBot >= g_targetRowTop) {
-      int d = (g_targetRowTop - S(2)) - predY;
-      if (d < 0) d = -d;
-      if (d <= g_pitch * 2) useMeasured = 1;
-    }
-    if (useMeasured) {
-      /* 这一行的文字就在画面上：色带以它为中心，高度取一整行，
-         这样上下的位置和预测分支完全一致，不会忽大忽小 */
-      int mid = (g_targetRowTop + g_targetRowBot) / 2;
-      hh = g_pitch - S(2);
-      y = mid - hh / 2;
-    } else {
-      y = predY;
-      hh = g_pitch - S(2);
-    }
-    /* 最可靠的做法：Dev-C++ 自己把出错行涂成红底/蓝底时，色带直接贴着
-       那一行的真实上下沿走，绝不靠行距推算，也就不会“标不到蓝行红行”。 */
-    if (rel >= 0 && g_colRowN > 0) {
-      int i, bestI = -1, bestD = 1 << 30;
-      int wantMid = y + hh / 2;
-      int rad = useMeasured ? g_pitch / 3 : g_pitch * 3 / 4;
-      for (i = 0; i < g_colRowN; i++) {
-        int mid = (g_colRowTop[i] + g_colRowBot[i]) / 2;
-        int d = mid - wantMid;
-        if (d < 0) d = -d;
-        if (d < bestD) { bestD = d; bestI = i; }
-      }
-      if (bestI >= 0 && bestD <= rad &&
-          (g_colRowBot[bestI] - g_colRowTop[bestI] + 1) >= g_pitch / 2) {
-        /* 太薄的一条（分割线/细边框之类）不算行高亮，别吸附上去 */
-        y = g_colRowTop[bestI] - S(1);
-        hh = (g_colRowBot[bestI] - g_colRowTop[bestI] + 1) + S(2);
-        g_bandFullRow = 1;
+    int hh = g_pitch - S(2);
+    int y;
+    if (hh < S(10)) hh = S(10);
+    /* 标行位置 = “第 1 行的行顶在文档里的 y” + (行号-1)×行距 - 已经滚过的像素。
+       全部是绝对量，没有任何逐个滚动累加 —— 上滑下滑多少次都只会回到同一个位置。 */
+    if (g_baseY > 0 && g_pitch > S(8))
+      y = g_baseY + (line - 1) * g_pitch - g_scrollPx;
+    else
+      y = g_firstTextY + rel * g_pitch;
+    /* Dev-C++ 自己给这一行涂了底色（红=错误行、蓝=选中行）时，直接压上去 */
+    {
+      int ci;
+      for (ci = 0; ci < g_colRowN; ci++) {
+        if (g_colLine[ci] == line && g_colScroll == g_scrollTop) {
+          y = g_colRowTop[ci];
+          hh = g_colRowBot[ci] - g_colRowTop[ci] + 1;
+          break;
+        }
       }
     }
-    if (rel >= 0 && y >= 0 && y + hh <= edH + S(4)) {
-      /* 抖动抑制：和上次画的位置只差几个像素就沿用上次的值。
-         测量值每轮上下飘一两像素，会导致色带每 200ms 重绘一次，看起来一直在闪。 */
-      if (g_sigBandY >= 0 && abs(y - g_sigBandY) <= S(6) &&
-          abs(hh - g_sigBandH) <= S(6)) {
-        y = g_sigBandY;
-        hh = g_sigBandH;
-      }
+    /* 只剩不到半行露在边上时，就当它已经滚出可视区：
+       以前会夹到第一行/最后一行，看起来像“标到了上一行/下一行”。 */
+    if (g_pitch > S(8) && y > -hh / 2 && y < edH) {
+      if (y < 0) y = 0;
+      if (y + hh > edH) { y = edH - hh; if (y < 0) y = 0; }
       g_bandLineY = y;
       g_bandLineH = hh;
     }
@@ -2277,19 +2811,19 @@ static void layout(void)
     int x, y;
 
     stripH = stripHeight();
-    if (stripH < S(40)) stripH = S(40);
-    if (stripH > S(600)) stripH = S(600);
+    if (stripH < CS(40)) stripH = CS(40);
+    if (stripH > CS(600)) stripH = CS(600);
 
     if (g_userW > 0) {
       colW = g_userW;
     } else {
-      int avail = edW - S(60);
-      colW = avail > S(330) ? S(330) : avail;
-      if (colW < S(240)) colW = S(240);
+      int avail = edW - CS(60);
+      colW = avail > CS(330) ? CS(330) : avail;
+      if (colW < CS(240)) colW = CS(240);
     }
 
-    cardH = g_collapsed ? S(24) : S(320);
-    totalH = stripH + S(6) + cardH;
+    cardH = g_collapsed ? CS(24) : CS(320);
+    totalH = stripH + CS(6) + cardH;
 
     g_colW = colW;
     g_stripW = colW;
@@ -2298,33 +2832,30 @@ static void layout(void)
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
 
     if (g_userMoved) {
-      /* 用户自己摆的位置：只夹在屏幕工作区内，不再自动贴代码 */
+      /* 用户自己拖过：位置固定，不再自动贴代码 */
       g_stripX = g_cardX;
       g_stripY = g_cardY - stripH - S(6);
-    } else if (g_placed && g_stripX > 0) {
-      /* 位置已经自动摆过一次：这就是一个普通浮窗了。
-         不再每帧贴着代码/编辑区重算，Dev-C++ 挪动也不会被“粘”着走。 */
     } else {
-      RECT hr;
-      if (!GetWindowRect(g_hHost, &hr)) {
-        hr.left = g_edL; hr.top = g_edT; hr.right = g_edR; hr.bottom = g_edB;
+      /* 代码浮窗跟着“标红的错行”走：贴在错行右侧的空白处，
+         右边放不下就贴着错行、纵向尽量靠近它，并且永远留在编辑区内。
+         以前只在第一帧摆一次，之后固定不动，还会跑到屏幕上方去。 */
+      int bandTop = (g_bandLineY >= 0) ? (g_edT + g_bandLineY) : (g_edT + S(60));
+      int ink = g_inkRight > 0 ? g_inkRight : edW / 2;
+      x = g_edL + ink + S(24);
+      y = bandTop - CS(10);
+      if (x + colW > g_edR - S(8)) {
+        x = g_edR - S(8) - colW;   /* 右边没空白：整体往左收，别压到窗口外 */
       }
-      x = hr.right + S(16);
-      y = hr.top + S(64);
-      if (x + colW > wa.right - S(8)) {
-        /* 屏幕右边放不下：贴着“代码最右侧”往后放，尽量只压在空白处，
-           而不是压住右边一大片代码 */
-        int ink = g_inkRight > 0 ? g_inkRight : edW / 2;
-        x = g_edL + ink + S(24);
-        if (x + colW > wa.right - S(8)) x = wa.right - S(8) - colW;
-        if (x < g_edL + S(8)) x = g_edL + S(8);
-        if (x < wa.left + S(8)) x = wa.left + S(8);
-      }
+      if (x < g_edL + S(8)) x = g_edL + S(8);
+      if (x + colW > wa.right - S(8)) x = wa.right - S(8) - colW;
+      if (x < wa.left + S(8)) x = wa.left + S(8);
+      /* 纵向：先让浮窗顶边贴着错行，再夹进编辑区里（绝不出界） */
+      if (y + totalH > g_edB - S(8)) y = g_edB - S(8) - totalH;
+      if (y < g_edT + S(8)) y = g_edT + S(8);
       if (y + totalH > wa.bottom - S(12)) y = wa.bottom - S(12) - totalH;
       if (y < wa.top + S(8)) y = wa.top + S(8);
       g_stripX = x;
       g_stripY = y;
-      g_placed = 1;   /* 只自动摆这一次，之后不再粘着代码 */
     }
 
     if (g_stripY < wa.top) g_stripY = wa.top;
@@ -2359,7 +2890,6 @@ static void hideAll(void)
   hideWindow(g_hBand);
   hideWindow(g_hStrip);
   hideWindow(g_hCard);
-  hideWindow(g_hMemoStrip);
 }
 
 /* Dev-C++ 正在运行程序时标题会带 [Executing]：这时控制台窗口会盖住编辑区，
@@ -2387,19 +2917,19 @@ static int isConsoleWindow(HWND h)
 static void initFonts(void)
 {
   if (g_fHead) return;
-  g_fHead = CreateFontW(-S(14), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
+  g_fHead = CreateFontW(-CS(14), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
                         OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
                         DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
-  g_fBody = CreateFontW(-S(13), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+  g_fBody = CreateFontW(-CS(13), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
                         OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
                         DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
-  g_fSmall = CreateFontW(-S(11), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
+  g_fSmall = CreateFontW(-CS(11), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
                          OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
                          DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
-  g_fMono = CreateFontW(-S(12), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
+  g_fMono = CreateFontW(-CS(12), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET,
                         OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
                         FIXED_PITCH | FF_MODERN, L"Consolas");
-  g_fTag = CreateFontW(-S(11), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
+  g_fTag = CreateFontW(-CS(11), 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET,
                        OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
                        DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
 }
@@ -2411,7 +2941,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
   WCHAR *slash;
   FILETIME lastWrite;
   DWORD lastSize = 0;
-  int lastTop = -999, lastLine = -999, lastDrawn = 0;
+  int lastTop = -999, lastLine = -999, lastDrawn = 0, lastScrollPos = -99999;
   int lastEdL = -99999, lastEdT = -99999, lastEdR = -99999, lastEdB = -99999;
   MSG msg;
 
@@ -2447,16 +2977,23 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
   g_hBand = mkLayered(1);
   g_hStrip = mkLayered(1);
   g_hCard = mkLayered(0);
-  g_hMemoStrip = mkLayered(1);
   /* 三个窗口都从屏幕截图里排除掉：抓屏测量时就不用再藏一遍，
      彻底消掉“每隔一会儿整个浮层闪一下”的现象 */
   {
-    int a = excludeFromCapture(g_hBand);
-    int b = excludeFromCapture(g_hStrip);
-    int c = excludeFromCapture(g_hCard);
-    excludeFromCapture(g_hMemoStrip);
-    g_capExclOk = (a && b && c);
-    glog(L"capExcl=%d (%d,%d,%d)", g_capExclOk, a, b, c);
+    WCHAR dbg[MAX_PATH];
+    int a, b, c;
+    /* 调试用：state\showcapture.txt 存在时不做排除，方便截图核对标行 */
+    wsprintfW(dbg, L"%s\\state\\showcapture.txt", gHome);
+    if (GetFileAttributesW(dbg) != INVALID_FILE_ATTRIBUTES) {
+      g_capExclOk = 0;
+      glog(L"capExcl=0 (debug)");
+    } else {
+      a = excludeFromCapture(g_hBand);
+      b = excludeFromCapture(g_hStrip);
+      c = excludeFromCapture(g_hCard);
+      g_capExclOk = (a && b && c);
+      glog(L"capExcl=%d (%d,%d,%d)", g_capExclOk, a, b, c);
+    }
   }
   lastWrite.dwLowDateTime = 0; lastWrite.dwHighDateTime = 0;
 
@@ -2495,7 +3032,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
             g_needDraw = 1;
             g_forceMeasure = 1;
             g_userDX = g_userDY = 0;
-            g_collapsed = 0;   /* 新的一次分析：浮窗默认展开 */
+            g_collapsed = 1;   /* 新的一次分析：浮窗默认折叠 */
             g_cardHidden = 0;
             glog(L"json on=%d kind=%s ok=%d line=%d title=%s", gd.on, gd.kind, gd.ok, gd.line, gd.title);
           }
@@ -2535,10 +3072,18 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       BOOL executing = hostExecuting();
       /* Dev-C++ 主窗自己被藏起来（比如程序正在 [Executing]）时绝不能画：
          否则玻璃会浮在别的程序上面 */
-      if (fg && g_hHost && IsWindowVisible(g_hHost)) {
+      if (fg && g_hHost) {
         WCHAR t[256], cls[128];
         active = (fg == g_hHost || GetAncestor(fg, GA_ROOT) == g_hHost);
         if (!active && g_hEdit && GetAncestor(g_hEdit, GA_ROOT) == fg) active = 1;
+        /* 7.x：居前的是外层 wrapper，编辑器在另一个 top-level form 里，
+           两者属于同一个进程 —— 按进程认，别因为窗口不是同一个就把玻璃藏了 */
+        if (!active) {
+          DWORD p1 = 0, p2 = 0;
+          GetWindowThreadProcessId(fg, &p1);
+          GetWindowThreadProcessId(g_hHost, &p2);
+          if (p1 && p1 == p2) active = 1;
+        }
         if (!active) {
           GetClassNameW(fg, cls, 128);
           if (!wcscmp(cls, CLASS_GLASS)) active = 1;
@@ -2562,14 +3107,15 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       }
     }
     int edL = g_edL, edT = g_edT, edR = g_edR, edB = g_edB;
-    int top = readTopLine();
+    readTopLine();                 /* 更新 g_scrollTop / g_scrollTopLine */
+    int top = topLineNow();        /* 锚点相对推算出的第一可见行 */
     int changedGeo = (edL != lastEdL || edT != lastEdT || edR != lastEdR || edB != lastEdB || top != lastTop);
 
     if (!gd.hasData || !gd.on) {
       hideAll();
       lastDrawn = 0;
       writeAlive();
-      lastEdL = edL; lastTop = top; lastLine = gd.line;
+      lastEdL = edL; lastTop = top; lastScrollPos = g_scrollTop; lastLine = gd.line;
       Sleep(230);
       continue;
     }
@@ -2601,24 +3147,51 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
          以前 changedGeo 也算重新量，拖窗口就变成每帧藏一次 —— 满屏闪。 */
       int sizeChanged = ((edR - edL) != (lastEdR - lastEdL)) ||
                         ((edB - edT) != (lastEdB - lastEdT));
-      int scrolled = (top != lastTop);
+      /* 滚动可能不到一整行（7.x 是像素滚动）：只要滚动条动过就算，色带才能一个像素一个像素地跟 */
+      int scrolled = (top != lastTop) || (g_scrollTop != lastScrollPos);
       /* 运行中的程序会把控制台窗口盖在编辑区上，这时抓屏量到的是控制台画面，
          行距/右边界全都会算错 —— 运行期间只沿用上一次量好的几何 */
       int executing = hostExecuting();
-      if (!executing && (sizeChanged || scrolled || g_forceMeasure || (g_needDraw && g_pitch <= 1))) {
+      if (!executing && (sizeChanged || g_forceMeasure || (g_needDraw && g_pitch <= 1))) {
+        int pitchBefore = g_pitch;
         /* 只有窗口尺寸变了、或者第一次测量，才允许改行距；
            单纯滚动/选中行变色引起的重测一律沿用已经量准的行距 */
         g_measureTrust = (sizeChanged || g_pitch <= S(8)) ? 1 : 0;
         g_forceMeasure = 0;
-        captureEditor();
+        readTopLine();
+        {
+          int scrollBeforeCap = g_scrollTop;
+          captureEditor();
+          readTopLine();   /* 抓屏这一刻的滚动位置：和抓屏前不一样就说明画面可能错开一帧 */
+          g_measScrollStable = (g_scrollTop == scrollBeforeCap) ? 1 : 0;
+        }
         measureLines();   /* 抓空了会在里面重新置 g_forceMeasure，下一轮再试 */
         if (g_capFallback) { g_needDraw = 1; g_capFallback = 0; }
+        readTopLine();
+        /* 只有在“绝对换算可信”的时候才重设锚点：第一次、尺寸变了、行距变了。
+           平时滚动全靠锚点相对推算，不会因为滚动条 nPos 的绝对语义差一位。
+           画面拟合出来的第一可见行和锚点推算值对不上（老版滚动条僵死）时，
+           以画面为准重新锚定，否则色带会一直错下去。 */
+        {
+          int reanchor = (!g_ancValid || sizeChanged ||
+                          (pitchBefore > S(8) && g_pitch != pitchBefore));
+          if (g_fitTop > 0 && g_fitTop != topLineNow()) reanchor = 1;
+          if (reanchor)
+            anchorScrollAt(g_fitTop > 0 ? g_fitTop : g_scrollTopLine);
+        }
+        g_colScroll = g_scrollTop;   /* 变色行的 y 只在这个滚动位置有效 */
+        top = topLineNow();
+        g_topLine = top;
+        g_needDraw = 1;
         /* 窗口挪过位置就一定要重画：否则浮层还停在旧坐标上（色带“消失”就是这个） */
-        if (edL != lastEdL || edT != lastEdT || edR != lastEdR || edB != lastEdB)
-          g_needDraw = 1;
-        lastEdL = edL; lastEdT = edT; lastEdR = edR; lastEdB = edB; lastTop = top;
-      } else if (changedGeo) {
         lastEdL = edL; lastEdT = edT; lastEdR = edR; lastEdB = edB;
+        lastTop = top; lastScrollPos = g_scrollTop;
+      } else if (scrolled || changedGeo) {
+        /* 滚动：不抓屏、不重测 —— 只把“第一可见行”按滚动条位移换算一下。
+           行距/相位已经量准，色带位置是纯算术，所以每一帧都能立刻跟上滚轮。 */
+        g_topLine = top;
+        lastEdL = edL; lastEdT = edT; lastEdR = edR; lastEdB = edB;
+        lastTop = top; lastScrollPos = g_scrollTop;
         g_needDraw = 1;
       } else {
         /* 没有输入事件时低频比对文本指纹（打字/粘贴后编辑器可能自己滚动） */
@@ -2634,37 +3207,74 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
     }
 
     layout();
-
+    /* 位置平滑跟随：目标位置（g_cardY/g_stripY…）和实际画出去的位置不一样时，
+       每帧靠近 1/3，看起来是滑过去而不是瞬移。只挪位置，不重新算内容。 */
+    {
+      if (!g_curValid || g_dragging || g_resizing) {
+        g_curCardX = g_cardX; g_curCardY = g_cardY;
+        g_curStripX = g_stripX; g_curStripY = g_stripY;
+        g_curValid = 1;
+      }
+      {
+        int d, s;
+        int nx = g_curCardX, ny = g_curCardY, sx = g_curStripX, sy = g_curStripY;
+        d = g_cardX - nx; if (d) { s = d / 3; if (s > -2 && s < 2) s = d > 0 ? 2 : -2; nx += s; }
+        d = g_cardY - ny; if (d) { s = d / 3; if (s > -2 && s < 2) s = d > 0 ? 2 : -2; ny += s; }
+        d = g_stripX - sx; if (d) { s = d / 3; if (s > -2 && s < 2) s = d > 0 ? 2 : -2; sx += s; }
+        d = g_stripY - sy; if (d) { s = d / 3; if (s > -2 && s < 2) s = d > 0 ? 2 : -2; sy += s; }
+        if (nx != g_curCardX || ny != g_curCardY || sx != g_curStripX || sy != g_curStripY) {
+          if (abs(g_cardX - nx) <= 2 && abs(g_cardY - ny) <= 2) { nx = g_cardX; ny = g_cardY; }
+          if (abs(g_stripX - sx) <= 2 && abs(g_stripY - sy) <= 2) { sx = g_stripX; sy = g_stripY; }
+          g_curCardX = nx; g_curCardY = ny;
+          g_curStripX = sx; g_curStripY = sy;
+          g_needDraw = 1;   /* 用新位置重画一次（内容不变） */
+        }
+      }
+    }
+    /* 规矩：当前画面上真的标出了错误行，才显示代码浮窗（提示条 + 讲解卡）。
+       标行不在可视区（滚走了/没行号）就一律收起，别浮在代码上碍事。 */
+    {
+      int okMode = gd.ok && wcscmp(gd.kind, L"busy") != 0;
+      int bandOk = (gd.line > 0 && g_bandLineY >= 0 && !hostExecuting());
+      g_bandVisible = okMode ? 0 : bandOk;
+    }
     /* !lastDrawn：窗口被收起过（切走/没找到 Dev-C++）就必须重画，
        否则 SetWindowPos 不会把隐藏窗口显示出来，浮层会一直不出现 */
     if (g_needDraw || !lastDrawn || gd.line != lastLine ||
         g_bandLineY != g_sigBandY || g_bandLineH != g_sigBandH ||
+        g_bandVisible != g_sigBandVis ||
         g_cardX != g_sigCardX || g_cardY != g_sigCardY ||
         g_stripX != g_sigStripX || g_stripY != g_sigStripY ||
-        g_memoL != g_sigMemoL || g_memoT != g_sigMemoT ||
         g_collapsed != g_sigCollapsed) {
       if (!wcscmp(gd.kind, L"busy")) {
         hideWindow(g_hBand);
         hideWindow(g_hCard);
-      } else {
-        /* 程序运行中编辑区被控制台盖住，行高亮没有意义，只留提示条和讲解卡 */
-        if (gd.line > 0 && !hostExecuting()) renderBand(); else hideWindow(g_hBand);
+        renderStrip();
+      } else if (gd.ok) {
+        /* 没有错误：只在代码空白处提示“代码正常，请运行测试” */
+        hideWindow(g_hBand);
+        hideWindow(g_hCard);
+        renderOkHint();
+      } else if (g_bandVisible) {
+        renderBand();
         renderCard();
+        renderStrip();
+      } else {
+        /* 没有标行就不显示代码浮窗 */
+        hideWindow(g_hBand);
+        hideWindow(g_hCard);
+        hideWindow(g_hStrip);
       }
-      renderStrip();
-      renderMemoStrip();
       g_needDraw = 0;
       g_sigLine = gd.line;
       g_sigBandY = g_bandLineY;
       g_sigBandH = g_bandLineH;
+      g_sigBandVis = g_bandVisible;
       g_sigCardX = g_cardX;
       g_sigCardY = g_cardY;
       g_sigStripX = g_stripX;
       g_sigStripY = g_stripY;
       g_sigCollapsed = g_collapsed;
-      g_sigMemoH = g_memoStripH;
-      g_sigMemoL = g_memoL;
-      g_sigMemoT = g_memoT;
       lastLine = gd.line;
       lastTop = top;
       lastDrawn = 1;
@@ -2673,11 +3283,12 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       moveIfMoved(g_hBand, g_edL + g_bandRelX, g_edT + g_bandRelY);
       moveIfMoved(g_hStrip, g_stripX, g_stripY);
       moveIfMoved(g_hCard, g_cardX, g_cardY);
-      moveIfMoved(g_hMemoStrip, g_memoL, g_memoT);
     }
 
     writeAlive();
-    Sleep(200);
+    /* 有行要标的时候高频轮询滚动条：滚轮一动，色带就跟着走 */
+    if (gd.on && gd.line > 0) Sleep(15);
+    else Sleep(200);
   }
   return 0;
 }

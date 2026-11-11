@@ -10,7 +10,7 @@
 不切窗口、不打断思路、不堆日志。
 
 [![Platform](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6?style=flat-square)](https://github.com/Qs277/devai-devcpp)
-[![Dev-C++](https://img.shields.io/badge/Dev--C%2B%2B-6.x-e2624b?style=flat-square)](https://github.com/Qs277/devai-devcpp)
+[![Dev-C++](https://img.shields.io/badge/Dev--C%2B%2B-6.4%20%7C%207.1-e2624b?style=flat-square)](https://github.com/Qs277/devai-devcpp)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-3fb950?style=flat-square)](https://nodejs.org)
 [![License](https://img.shields.io/badge/license-MIT-22272e?style=flat-square)](LICENSE)
 
@@ -39,7 +39,8 @@
 
 - 出错行整行淡红高亮，左边一条实心红边；
 - 小D 站在行号栏旁边，虚线手臂指向这一行，右上角 `第 8 行` 标签；
-- 高亮行**下方**弹出讲解卡：三个框、带改后代码块，标题栏可**折叠**、可**拖动**；
+- 讲解卡自动贴到**出错那行右侧的空白处**（放不下就收进编辑区内），内容**默认展开**，
+  点标题栏才折叠；滚轮上下滚时卡片是**平滑滑过去**跟着走，不会闪一下再瞬移；
 - 位置随 Dev-C++ 滚动/移动自动跟随；Dev-C++ 不在前台时自动收起，不盖别的软件。
 
 **② 右侧浮窗面板（安静的状态栏）**
@@ -47,25 +48,26 @@
 - 顶部只留一行：当前状态 + 上一次分析的结论，**不堆历史、不刷屏**；
 - 讲解卡固定三框：`① 错误原因` → `② 具体改这里（+改后代码）` → `③ 知识点与技巧`。
 
-**③ 底部「编译日志 / 运行结果」玻璃条**
+**③ 没有错误的时候**
 
-- 编译失败时，在底部日志区再贴一条玻璃，直接写一句结论；
-- 展开日志面板时自动出现；面板收起时自动隐藏，不占地方。
+- 不划红带、不弹卡片，只在代码区的空白处放一颗绿色小药丸：
+  **`代码正常，请运行测试`**；
+- 当前画面里没有标出行时，红带和讲解卡一律收起，绝不乱标到别的行上。
 
 ---
 
 ## 安装（3 步，不会动你的代码）
 
-> 需要：Windows 10/11、[Dev-C++ 6.x](https://github.com/Embarcadero/Dev-Cpp)、[Node.js 18+](https://nodejs.org)
+> 需要：Windows 10/11、[Dev-C++ 6.4 或 7.1](https://github.com/Embarcadero/Dev-Cpp)、[Node.js 18+](https://nodejs.org)
 
 1. 下载 [Release 包](https://github.com/Qs277/devai-devcpp/releases/latest) 并解压到任意目录（**不要**解压到 C 盘根目录或中文路径下）；
 2. 双击 **`安装 DevAI.bat`**（右键 → 以管理员身份运行更稳）；
 3. 用开始菜单里生成的 **`Dev-C++ 智能版`** 快捷方式（或 `启动 Dev-C++ 智能版.bat`）打开 Dev-C++，然后在面板「设置」里填你自己的 API Key。
 
-> 电脑上装了多个 Dev-C++（旧版 + 新版共存）？
-> `安装 DevAI.bat -All` 会一次接通全部；只想接指定的那一个用
-> `安装 DevAI.bat -DevCppRoot "D:\某目录\Dev-Cpp"`。
-> 每个版本各自生成带名字的启动器，运行目录 / 配置 / API Key 共用一份，卸载时逐个还原。
+> 电脑上装了多个 Dev-C++（6.4 + 7.1 共存）？
+> 安装器会自动扫描全部并逐个接好，只生成**一个**启动器；
+> 启动时弹窗让你选这次用哪个版本，配置与 API Key 共用一份。
+> 只想接指定的那一个：`安装 DevAI.bat -DevCppRoot "D:\某目录\Dev-Cpp"`。
 
 安装器会做这些事（每一步都会备份，可完整还原）：
 
@@ -127,8 +129,11 @@ flowchart LR
 **Q：玻璃层不出现？**
 玻璃层只在 Dev-C++ 是当前窗口时显示；如果被最小化或被别的窗口挡住，它会自动收起。
 
-**Q：底部玻璃条没有？**
-它需要底部「编译日志」面板处于展开状态；收起时没有空白区，会自动隐藏。
+**Q：红带/讲解卡有时候不出现？**
+当前画面里看不到出错那一行时（比如滚到别处了）就会收起——只标你看得见的那一行，不硬标到旁边去。
+
+**Q：6.4 和 7.1 都能用吗？**
+都能用。两个版本的行号栏与滚动条实现不一样，玻璃层会分别识别，标行位置按真实行号算，滚轮跟手。
 
 **Q：会不会改坏我的 Dev-C++？**
 所有被替换的文件都在 `backup/` 里留了原件，卸载即还原；安装器不改注册表、不改系统 PATH。
@@ -149,6 +154,7 @@ devai-plugin/
 │  ├─ server.js         # 零依赖 Node 服务（SSE + AI 编排 + 状态落盘）
 │  └─ ui/index.html     # 浮窗面板（单文件）
 ├─ install.ps1          # 自动检测 + 部署 + 备份
+├─ launcher.ps1         # 启动器：扫描本机所有 Dev-C++，弹窗选版本后一起拉起
 ├─ uninstall.ps1        # 还原
 ├─ 安装 DevAI.bat / 卸载 DevAI.bat
 └─ docs/banner.svg
@@ -177,7 +183,7 @@ devai-plugin/
 <details>
 <summary>English</summary>
 
-**DevAI (小D)** is a Windows overlay for Dev-C++ 6.x that turns a compiler error into three plain-language panels —
+**DevAI (小D)** is a Windows overlay for Dev-C++ 6.4 / 7.1 that turns a compiler error into three plain-language panels —
 *why it failed*, *what to change (with fixed code)*, *what to remember* — and highlights the exact failing line
 directly inside the editor, without leaving the IDE.
 
