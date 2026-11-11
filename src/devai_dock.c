@@ -325,24 +325,21 @@ static void makeFloat(HWND panel, HWND host)
     bringToFront(panel);
 }
 
-/* 贴在 Dev-C++ 右侧，和它等高，跟随位置/尺寸/最小化 */
-static void glue(HWND panel, HWND host)
+/* 贴在 Dev-C++ 右侧，和它等高，跟随位置/尺寸/最小化。
+   只在“用户没动过”的时候摆位置；用户拖过/拉过大小就不再摆，绝不回弹。 */
+static int computeDockRect(HWND host, RECT *out)
 {
-    if (IsIconic(host) || !IsWindowVisible(host)) {
-        if (IsWindowVisible(panel)) ShowWindow(panel, SW_HIDE);
-        return;
-    }
-    if (!IsWindowVisible(panel)) ShowWindow(panel, SW_SHOWNOACTIVATE);
+    if (!host || !IsWindow(host)) return 0;
+    if (IsIconic(host) || !IsWindowVisible(host)) return 0;
     RECT hr;
-    if (!GetWindowRect(host, &hr)) return;
-    int hw = hr.right - hr.left;
+    if (!GetWindowRect(host, &hr)) return 0;
     int hh = hr.bottom - hr.top;
-    if (hw <= 0 || hh <= 0) return;
+    if (hr.right - hr.left <= 0 || hh <= 0) return 0;
 
     RECT wa;
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &wa, 0);
 
-    /* 宽度按网页缩放比换算：440 逻辑像素 × devicePixelRatio */
+    /* 宽度按网页缩放比换算：gPanelW 逻辑像素 × devicePixelRatio */
     int ideal = (int)(gPanelW * readDpr() + 0.5);
 
     /* 右侧还有空间就贴在外面，没有就往里压（像 IDE 右侧栏） */
@@ -352,7 +349,6 @@ static void glue(HWND panel, HWND host)
     if (room >= ideal) {
         x = hr.right;
     } else {
-        /* 右边没地方了：压在 Dev-C++ 右边缘上，当作 IDE 右侧栏 */
         x = hr.right - w;
         if (x < wa.left) x = wa.left;
     }
@@ -361,10 +357,69 @@ static void glue(HWND panel, HWND host)
     if (y < wa.top) y = wa.top;
     if (y + hh > wa.bottom) hh = wa.bottom - y;
 
-    RECT pr;
-    GetWindowRect(panel, &pr);
-    if (pr.left != x || pr.top != y || pr.right - pr.left != w || pr.bottom - pr.top != hh) {
-        SetWindowPos(panel, NULL, x, y, w, hh, SWP_NOZORDER | SWP_NOACTIVATE);
+    out->left = x; out->top = y;
+    out->right = x + w; out->bottom = y + hh;
+    return 1;
+}
+
+/* 每个面板的贴靠状态：用户动过就 free，之后只维持置顶、不再改位置/大小 */
+typedef struct {
+    HWND h;
+    int has;      /* applied 有效 */
+    int free;     /* 用户自己摆过 */
+    RECT applied;
+} PanelDock;
+
+static PanelDock gPD[8];
+
+static PanelDock *pdOf(HWND p)
+{
+    int i, slot = -1;
+    for (i = 0; i < 8; ++i) if (gPD[i].h == p) { slot = i; break; }
+    if (slot < 0) {
+        for (i = 0; i < 8; ++i) if (!gPD[i].h) { slot = i; break; }
+        if (slot < 0) slot = 0;
+        gPD[slot].h = p;
+        gPD[slot].has = 0;
+        gPD[slot].free = 0;
+    }
+    return &gPD[slot];
+}
+
+static int rectEq(const RECT *a, const RECT *b)
+{
+    return abs(a->left - b->left) <= 2 && abs(a->top - b->top) <= 2 &&
+           abs((a->right - a->left) - (b->right - b->left)) <= 2 &&
+           abs((a->bottom - a->top) - (b->bottom - b->top)) <= 2;
+}
+
+static void glue(HWND panel, HWND host)
+{
+    if (!IsWindow(panel)) return;
+    PanelDock *pd = pdOf(panel);
+
+    if (IsIconic(host) || !IsWindowVisible(host)) {
+        /* 用户自己摆出来的浮窗不跟着 Dev-C++ 最小化消失 */
+        if (!pd->free && IsWindowVisible(panel)) ShowWindow(panel, SW_HIDE);
+        return;
+    }
+    if (!IsWindowVisible(panel)) ShowWindow(panel, SW_SHOWNOACTIVATE);
+
+    RECT exp, cur;
+    int canDock = computeDockRect(host, &exp);
+
+    /* 和上次我们摆的位置对不上 = 用户拖过/拉过大小：从此完全听用户的 */
+    if (canDock && pd->has && GetWindowRect(panel, &cur) && !rectEq(&cur, &pd->applied)) {
+        if (!pd->free) logline(L"[dock] panel moved by user, stop snapping");
+        pd->free = 1;
+    }
+
+    if (canDock && !pd->free) {
+        SetWindowPos(panel, NULL, exp.left, exp.top,
+                     exp.right - exp.left, exp.bottom - exp.top,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        pd->applied = exp;
+        pd->has = 1;
     }
 
     /* Dev-C++ 在前台时把面板压在最上层：Chromium 被遮挡后会停止绘制而变透明 */
@@ -454,6 +509,11 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, PWSTR cmd, int show)
         if (want != applied) {
             applied = want;
             for (int i = 0; i < 8; ++i) seenMode[i] = 0;
+            /* 换模式时重新给一次默认位置/大小，之后仍然完全听用户的 */
+            for (int i = 0; i < 8; ++i) {
+                gPD[i].has = 0;
+                gPD[i].free = 0;
+            }
             logline(L"[dock] mode=%s", want == 1 ? L"dock" : L"float");
         }
 
@@ -484,9 +544,13 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, PWSTR cmd, int show)
         int hostMin = (host && (IsIconic(host) || !IsWindowVisible(host)));
         if (want == 1 && hostMin) {
             if (!hiddenForMin) {
+                int any = 0;
                 for (int i = 0; i < n; ++i)
-                    if (IsWindowVisible(gPanelList[i])) ShowWindow(gPanelList[i], SW_HIDE);
-                hiddenForMin = 1;
+                    if (IsWindowVisible(gPanelList[i]) && !pdOf(gPanelList[i])->free) {
+                        ShowWindow(gPanelList[i], SW_HIDE);
+                        any = 1;
+                    }
+                hiddenForMin = any;
             }
             Sleep(200);
             continue;

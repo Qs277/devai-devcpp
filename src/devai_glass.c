@@ -20,10 +20,6 @@
 #include <wchar.h>
 #include <math.h>
 
-#ifndef MODSHIFT
-#define MODSHIFT 0
-#endif
-
 #define CLASS_GLASS L"DevAIGlassOverlay"
 
 /* ------------------------------------------------------------------ 全局 */
@@ -37,7 +33,7 @@ static int gDpi = 144;
 
 static HFONT g_fHead, g_fBody, g_fSmall, g_fMono, g_fTag;
 
-static HWND g_hBand, g_hStrip, g_hCard;
+static HWND g_hBand, g_hStrip, g_hCard, g_hMemoStrip;
 static HWND g_hEdit, g_hHost, g_hMemo;
 
 static int g_hostL, g_hostT, g_hostR, g_hostB;
@@ -52,19 +48,18 @@ static int g_collapsed = 0;   /* 浮窗默认展开，点标题栏可折叠成�
 static int g_cardHidden = 0;
 static int g_userDX = 0, g_userDY = 0;
 static int g_userMoved = 0;   /* 用户拖过：位置固定，不再自动贴代码 */
+static int g_placed = 0;      /* 已经按默认位置摆过一次：之后就是普通浮窗，不再跟着代码重算 */
 static int g_userW = 0;       /* 用户拉出来的宽度（0 = 默认宽） */
 static int g_resizing = 0;    /* 正在拖右边缘调宽度 */
 static int g_resizeStartX = 0, g_resizeStartW = 0;
 static int g_needDraw = 1;
 static int g_cardX = 0, g_cardY = 0;
 static int g_stripX = 0, g_stripY = 0, g_stripW = 0, g_stripH = 0;
-static int g_colX = 0;        /* 右侧信息栏的起始 x（相对编辑区） */
 static int g_colW = 0;        /* 右侧信息栏宽度（放不下时整块挪到代码下面） */
 static int g_cardHeadH = 0;   /* 点击标题栏才折叠/展开 */
 static int g_inkRight = 0;    /* 可见代码最右侧有字的 x（相对编辑区），卡片放它右边 */
 static int g_lastCodeY = 0;   /* 可见代码最后一行的底部（相对编辑区） */
 static int g_panelL = 0, g_panelT = 0, g_panelB = 0;  /* 小助手浮窗的位置，卡片别压它 */
-static int g_topLineSet = 1;
 static char g_glassDoc[8192];   /* 缓存 json 原文 */
 
 static int g_codeX0 = 0;        /* 代码第 0 列的 x（相对编辑区） */
@@ -73,6 +68,11 @@ static int g_forceMeasure = 0;  /* 要求下一次重新截图测量 */
 static int g_measureTrust = 0;  /* 本次重测是否允许改动行距（尺寸变化/首次测量才允许） */
 static int g_targetRowTop = -1; /* 出错行在画面上真实文字范围（避免色带上下漂移） */
 static int g_targetRowBot = -1;
+/* Dev-C++ 自己给整行涂的底色（红=错误行、蓝=当前行）。
+   这些行在扫描文字行时会被跳过，但正是色带最该压上去的位置。 */
+static int g_colRowTop[32], g_colRowBot[32], g_colRowKind[32], g_colRowN = 0;
+/* 抓屏时能不能把自己的窗口排除掉（Win10 2004+ 不用再藏窗口，就不会闪） */
+static int g_capExclOk = 0;
 static int g_sigLine = -999, g_sigBandY = -999, g_sigBandH = -999;
 static int g_sigCardX = -999, g_sigCardY = -999, g_sigCollapsed = -1;
 static int g_sigStripX = -999, g_sigStripY = -999;
@@ -591,16 +591,35 @@ static void present(Canvas *c, HWND h, int x, int y)
   POINT dst, src;
   SIZE sz;
   BLENDFUNCTION bf;
+  RECT cur;
+  int needMove = 1;
+  /* 位置和大小都没变就不要再 SetWindowPos：对 topmost 的 layered 窗口
+     反复设置窗口位置会强制 DWM 重新合成，表现出来就是一直闪。 */
+  if (IsWindowVisible(h) && GetWindowRect(h, &cur) &&
+      cur.left == x && cur.top == y &&
+      (cur.right - cur.left) == c->w && (cur.bottom - cur.top) == c->h)
+    needMove = 0;
   dst.x = x; dst.y = y; src.x = 0; src.y = 0;
   sz.cx = c->w; sz.cy = c->h;
   bf.BlendOp = AC_SRC_OVER;
   bf.BlendFlags = 0;
   bf.SourceConstantAlpha = 255;
   bf.AlphaFormat = AC_SRC_ALPHA;
-  SetWindowPos(h, HWND_TOPMOST, x, y, c->w, c->h, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+  if (needMove)
+    SetWindowPos(h, HWND_TOPMOST, x, y, c->w, c->h, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
   UpdateLayeredWindow(h, screen, &dst, &sz, c->hdc, &src, 0, &bf, ULW_ALPHA);
   ShowWindow(h, SW_SHOWNA);
   ReleaseDC(NULL, screen);
+}
+
+/* 只是跟着 Dev-C++ 窗口挪位置：位置没变就什么都不做 */
+static void moveIfMoved(HWND h, int x, int y)
+{
+  RECT cur;
+  if (!h || !IsWindowVisible(h)) return;
+  if (GetWindowRect(h, &cur) && cur.left == x && cur.top == y) return;
+  SetWindowPos(h, HWND_TOPMOST, x, y, 0, 0,
+               SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 }
 
 static void hideWindow(HWND h)
@@ -726,6 +745,27 @@ static HWND mkLayered(int clickThrough)
   ensureClass();
   return CreateWindowExW(ex, CLASS_GLASS, L"", WS_POPUP, 0, 0, 1, 1,
                          NULL, NULL, GetModuleHandleW(NULL), NULL);
+}
+
+/* 把自己的窗口从屏幕截图里排除（WDA_EXCLUDEFROMCAPTURE，Win10 2004+）。
+   有了它，抓屏测量时就不用先把浮层藏起来再显示 —— 那个“藏一下”就是
+   用户看到的每 200ms 闪一下的根源。返回 1 = 系统支持。 */
+static int excludeFromCapture(HWND h)
+{
+  typedef BOOL (WINAPI *PFN_SetWDA)(HWND, DWORD);
+  static PFN_SetWDA pfn = NULL;
+  static int probed = 0;
+  if (!h) return 0;
+  if (!probed) {
+    HMODULE m = LoadLibraryW(L"user32.dll");
+    probed = 1;
+    if (m) pfn = (PFN_SetWDA)(void *)GetProcAddress(m, "SetWindowDisplayAffinity");
+  }
+  if (!pfn) return 0;
+#ifndef CAP_EXCLUDE_MODE
+#define CAP_EXCLUDE_MODE 0x00000011   /* WDA_EXCLUDEFROMCAPTURE */
+#endif
+  return pfn(h, CAP_EXCLUDE_MODE) ? 1 : 0;
 }
 
 /* ------------------------------------------------------------------ 查找窗口 */
@@ -1147,21 +1187,55 @@ static void detectTopLine(int *starts, int *ends, int count)
         if (d < bestD) { bestD = d; g_firstTextY = ph[i]; }
       }
     }
-    /* 出错行如果就在画面里，直接用这一行真实的文字上下沿，色带不会上下漂。
-       但必须和“按行距推算”的位置对得上：Dev-C++ 自带的红色标行/高亮行会让
-       扫描到的行和真实行号错开，不加校验就会把色带标到别的行去。 */
+    /* 出错行如果就在画面里，直接用这一行真实的文字上下沿，色带就不会上下漂。
+       怎么认这一行？不看“第几个文字行”（空行会让序号错位），也不全信行距，
+       而是拿源码里这一行的“行首缩进 + 行尾长度”去和画面上每条墨迹比对：
+       缩进一致、行尾长度一致的，就是同一行。位置只作为就近筛选条件。 */
     if (gd.line > 0) {
       int want = gd.line - bestT;
+      int li = gd.line - 1;
       int pred = g_firstTextY + want * pitch;
-      for (i = 0; i < rn; i++) {
-        if (ks[i] == want && rowTop[i] <= rowBot[i]) {
-          int d = rowTop[i] - pred;
-          if (d < 0) d = -d;
-          if (d <= pitch) {
-            g_targetRowTop = rowTop[i];
-            g_targetRowBot = rowBot[i];
+      if (want >= 0 && li >= 0 && li < lc) {
+        int sOff = off[li];
+        int eOff = (li + 1 < lc) ? off[li + 1] : g_editTextLen;
+        int vi = 0, vlen = lineVisual(sOff, eOff, &vi);
+        int expS = g_codeX0 + g_charW * vi;
+        int expE = g_codeX0 + g_charW * vlen;
+        int best = -1;
+        double bestC = 1e18;
+        int foundColored = 0;
+        /* Dev-C++ 把出错行涂成红底（或把选中的行涂成蓝底）时，这一行在
+           文字行扫描里是被“跳过”的，指纹匹配就只能匹配到上一行/下一行。
+           所以先直接认变色行：中心落在推算行内的那条变色行就是它。 */
+        {
+          int ci, cbest = -1, cd = 1 << 30, midPred = pred + pitch / 2;
+          for (ci = 0; ci < g_colRowN; ci++) {
+            int mid = (g_colRowTop[ci] + g_colRowBot[ci]) / 2;
+            int d = mid - midPred;
+            if (d < 0) d = -d;
+            if (d < cd && d * 3 <= pitch * 2) { cd = d; cbest = ci; }
           }
-          break;
+          if (cbest >= 0) {
+            g_targetRowTop = g_colRowTop[cbest];
+            g_targetRowBot = g_colRowBot[cbest];
+            foundColored = 1;
+          }
+        }
+        for (i = 0; !foundColored && i < rn; i++) {
+          int d = rowTop[i] - pred, cost;
+          if (d < 0) d = -d;
+          if (d > pitch * 2) continue;          /* 只在推算位置前后两行内找 */
+          if (vlen >= 4) {
+            cost = abs(inkS[i] - expS) * 2 + abs(inkE[i] - expE);
+            if (cost < bestC) { bestC = cost; best = i; }
+          } else {
+            /* 空行/极短行没有行尾可比，退回按位置取最近的一条 */
+            if (d * 3 < bestC) { bestC = d * 3; best = i; }
+          }
+        }
+        if (best >= 0 && bestC <= S(120) && rowTop[best] <= rowBot[best]) {
+          g_targetRowTop = rowTop[best];
+          g_targetRowBot = rowBot[best];
         }
       }
     }
@@ -1243,11 +1317,15 @@ static int captureEditor(void)
     if (!cvCreate(&g_cap, w, h)) { g_capReady = 0; return 0; }
     g_capW = w; g_capH = h; g_capReady = 1;
   }
-  /* 抓屏前先把自己的窗口藏起来，否则会把自己画的高亮/提示条也抓进去 */
-  if (g_hBand && IsWindowVisible(g_hBand)) { ShowWindow(g_hBand, SW_HIDE); g_capFallback = 1; }
-  if (g_hCard && IsWindowVisible(g_hCard)) { ShowWindow(g_hCard, SW_HIDE); g_capFallback = 1; }
-  if (g_hStrip && IsWindowVisible(g_hStrip)) { ShowWindow(g_hStrip, SW_HIDE); g_capFallback = 1; }
-  if (g_capFallback) Sleep(70);
+  /* 抓屏时不能把自己画的高亮/提示条抓进去。
+     系统支持“窗口不参与截图”时（Win10 2004+）什么都不用做；
+     老系统只能先藏起来 70ms 再抓 —— 这一步会闪，属于兜底方案。 */
+  if (!g_capExclOk) {
+    if (g_hBand && IsWindowVisible(g_hBand)) { ShowWindow(g_hBand, SW_HIDE); g_capFallback = 1; }
+    if (g_hCard && IsWindowVisible(g_hCard)) { ShowWindow(g_hCard, SW_HIDE); g_capFallback = 1; }
+    if (g_hStrip && IsWindowVisible(g_hStrip)) { ShowWindow(g_hStrip, SW_HIDE); g_capFallback = 1; }
+    if (g_capFallback) Sleep(70);
+  }
   screen = GetDC(NULL);
   BitBlt(g_cap.hdc, 0, 0, w, h, screen, g_edL, g_edT, SRCCOPY);
   ReleaseDC(NULL, screen);
@@ -1261,6 +1339,7 @@ static void measureLines(void)
   int bgR = 255, bgG = 255, bgB = 255;
   int starts[80], ends[80], count = 0;
   int thr, minH, limR;
+  g_colRowN = 0;
   if (!g_capReady) { g_pitch = S(22); g_firstTextY = S(6); g_inkRight = 0; g_lastCodeY = 0; return; }
   sw = w / 2;
   if (sw < 300) sw = w;
@@ -1315,6 +1394,7 @@ static void measureLines(void)
   for (y = 0; y < h && count < 80; y++) {
     int cnt = 0, samples = 0;
     int fillN = 0, fillHit = 0, fillKey = -1, fillSame = 1;
+    int fillR = 0, fillG = 0, fillB = 0;
     for (x = x0; x < sw; x += 2) {
       unsigned int v = g_cap.px[(size_t)y * w + x];
       int r = (v >> 16) & 255, g = (v >> 8) & 255, b = v & 255;
@@ -1331,9 +1411,9 @@ static void measureLines(void)
       int d = abs(r - bgR) + abs(g - bgG) + abs(b - bgB);
       int key = ((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4);
       fillN++;
-      if (d > 40) {
+      if (d > 16) {
         fillHit++;
-        if (fillKey < 0) fillKey = key;
+        if (fillKey < 0) { fillKey = key; fillR = r; fillG = g; fillB = b; }
         else if (key != fillKey) fillSame = 0;
       }
     }
@@ -1345,8 +1425,26 @@ static void measureLines(void)
     {
       int coloredRow = 0;
       if (samples > 0 && cnt * 100 > samples * 65) coloredRow = 1;
-      if (fillN > 30 && fillSame && fillHit * 100 > fillN * 88) coloredRow = 1;
+      if (fillN > 30 && fillSame && fillHit * 100 > fillN * 80) coloredRow = 1;
       if (coloredRow) {
+        /* 记下这一行的上下沿和底色类型：色带要正好压在 Dev-C++ 自己的
+           红色错误行 / 蓝色当前行上，而不是靠行距推算猜位置 */
+        int kind = 0;
+        if (fillR > 150 && fillR - fillG > 10 && fillR - fillB > 10) kind = 1;      /* 红/粉 */
+        else if (fillB > 140 && fillB - fillR > 7) kind = 2;                        /* 蓝 */
+        else if (fillR > 140 && fillG > 140 && fillB > 110 &&
+                 (fillB - fillR > 3 || fillR - fillG > 3)) kind = 3;                /* 浅黄/浅蓝 */
+        if (kind) {
+          if (g_colRowN > 0 && y - g_colRowBot[g_colRowN - 1] <= S(2) &&
+              g_colRowKind[g_colRowN - 1] == kind) {
+            g_colRowBot[g_colRowN - 1] = y;
+          } else if (g_colRowN < 32) {
+            g_colRowTop[g_colRowN] = y;
+            g_colRowBot[g_colRowN] = y;
+            g_colRowKind[g_colRowN] = kind;
+            g_colRowN++;
+          }
+        }
         if (y < hi) prof[y] = 0;
         inBand = 0;
         continue;
@@ -1401,6 +1499,11 @@ static void measureLines(void)
     if (cRight > 0) inkRight = cRight;
   }
   if (count == 0) {
+    /* 一行字都没扫到：多半是锁屏/窗口被遮住，抓到的是一张空图。
+       已经量准过就保留原值，别把好数据覆盖成默认值（否则一恢复就整体错位）；
+       同时要求下一轮重新量，恢复后能自动补上 */
+    g_forceMeasure = 1;
+    if (g_pitch > S(8)) return;
     g_pitch = S(22); g_firstTextY = S(6); g_inkRight = inkRight; g_lastCodeY = 0;
     if (g_codeX0 <= 0) g_codeX0 = S(56);
     if (g_charW <= 0) g_charW = S(9);
@@ -1433,9 +1536,14 @@ static void measureLines(void)
           for (b2 = a - 1; b2 >= 0 && gaps[b2] > v; b2--) gaps[b2 + 1] = gaps[b2];
           gaps[b2 + 1] = v;
         }
+        /* 相邻文字行的间距中位数。空行只会给出整数倍间距，中位数仍落在行距上；
+           注意不能用最小值 —— 行的“起点”取决于这一行最高的那个字母，
+           有的行高有的行矮，最小值会偏小（实测 26 vs 真行距 33）。 */
         med = gaps[gn / 2];
-        if (gn >= 4) pitch = med;
-        else if (med > 0 && (pitch * 4 < med * 3 || pitch * 3 > med * 4)) pitch = med;
+        if (med >= S(10) && med <= S(60) &&
+            med * 100 >= pitch * 85 && med * 100 <= pitch * 115) {
+          pitch = (pitch + med + 1) / 2;
+        }
       }
     }
     /* 行距一旦量准就不再随便改。滚动、Dev-C++ 给某行变色都会触发重测，
@@ -1507,52 +1615,120 @@ static int readTopLine(void)
 /* ------------------------------------------------------------------ 绘制：编辑区玻璃 */
 
 static int g_bandLineY = -1, g_bandLineH = 0;
+/* 这一行是不是 Dev-C++ 自己涂了底色的行（红/蓝）：是就整行铺满，一眼能看到 */
+static int g_bandFullRow = 0;
+/* 色带窗口实际的屏幕位置和大小：只覆盖色带那一小块，
+   不再铺满整个编辑区，避免和右侧助手浮窗叠在一起互相刷 */
+static int g_bandWinX = 0, g_bandWinY = 0, g_bandWinW = 0, g_bandWinH = 0;
+/* 色带相对编辑区左上角的偏移：窗口一移动就按这个偏移跟过去，
+   不用依赖“上次的绝对坐标”（否则 Dev-C++ 动一下色带就留在原地） */
+static int g_bandRelX = 0, g_bandRelY = 0;
 
 static void renderBand(void)
 {
   Canvas c;
-  int w = g_edR - g_edL, h = g_edB - g_edT;
+  int edW = g_edR - g_edL, edH = g_edB - g_edT;
   int line = gd.line;
-  int bandY, bandH;
+  int bandY = -1, bandH = 0;
+  int bx0 = 0, bx1 = 0, cw, ch;
+  int xl = -1, xr = -1;
 
-  if (w < 40 || h < 40) return;
-  if (!cvCreate(&c, w, h)) return;
+  if (edW < 40 || edH < 40) return;
 
   if (line > 0 && g_bandLineY >= 0) {
-    int xl = -1, xr = -1;
     bandY = g_bandLineY;
     bandH = g_bandLineH;
     /* 只标“有代码的那一段”，右边空白不涂 */
     rowInkRange(bandY, bandH, &xl, &xr, NULL);
 
-    /* 行号栏里竖一条小红条：不压代码，又能一眼看到是哪一行 */
-    {
-      int gx = g_codeX0 > S(16) ? g_codeX0 - S(9) : S(2);
-      if (gx < S(2)) gx = S(2);
-      cvFill(&c, gx, bandY, S(4), bandH, 198, 58, 58, 210);
-    }
+    /* 左边从头：行号栏里那条小红条也要包进来 */
+    bx0 = g_codeX0 > S(16) ? g_codeX0 - S(9) : S(2);
+    if (bx0 < S(2)) bx0 = S(2);
 
     if (xl >= 0 && xr >= xl) {
-      int bx = xl - S(5), bw2;
+      int bx = xl - S(5);
       /* 有缩进的行也别让色带从半中间开始：统一从代码第 0 列起 */
       if (g_codeX0 > 0 && bx > g_codeX0) bx = g_codeX0 - S(5);
       if (bx < S(2)) bx = S(2);
-      bw2 = (xr - bx) + S(6);
-      if (bw2 < S(10)) bw2 = S(10);
-      if (bx + bw2 > w) bw2 = w - bx;
-      cvFill(&c, bx, bandY, bw2, bandH, 176, 52, 60, 44);       /* 很淡的底色 */
-      cvFill(&c, bx, bandY + bandH - S(2), bw2, S(2), 176, 52, 60, 190); /* 底线 */
+      if (bx < bx0) bx0 = bx;
+      bx1 = xr + S(6);
+      /* 横跨整行：只涂代码那几个字太细，实际屏幕上根本看不见。
+         右边会被助手浮窗/卡片收边，所以不会盖到它们。 */
+      bx1 = edW;
+    } else {
+      int bx = g_codeX0 > 0 ? g_codeX0 : S(52);
+      if (bx < S(2)) bx = S(2);
+      if (bx < bx0) bx0 = bx;
+      bx1 = edW;
+    }
+
+    /* 右边别盖到助手浮窗上：卡片左边就收住 */
+    if (g_cardX > g_edL) {
+      int cardL = g_cardX - g_edL;
+      if (cardL > bx0 && cardL < bx1) bx1 = cardL - S(6);
+    }
+    /* 也别盖到独立的助手面板上 */
+    if (g_panelL > g_edL) {
+      int pl = g_panelL - g_edL;
+      if (pl > bx0 && pl < bx1) bx1 = pl - S(6);
+    }
+
+    if (bx1 > edW) bx1 = edW;
+    if (bx0 >= edW) bx0 = 0;
+    if (bx1 - bx0 < S(8)) {
+      if (bx0 + S(8) <= edW) bx1 = bx0 + S(8);
+      else bx0 = bx1 - S(8);
+    }
+    if (bx1 <= bx0) { bx0 = 0; bx1 = edW; }
+  }
+
+  if (bandY < 0) { hideWindow(g_hBand); return; }
+
+  cw = bx1 - bx0;
+  ch = bandH;
+  if (cw < S(4) || ch < S(4)) { hideWindow(g_hBand); return; }
+  if (!cvCreate(&c, cw, ch)) return;
+
+  {
+    /* 画布原点已经挪到 (bx0, bandY)，下面全部用相对坐标 */
+    int gx = g_codeX0 > S(16) ? g_codeX0 - S(9) : S(2);
+    if (gx < S(2)) gx = S(2);
+
+    /* 行号栏里竖一条小红条：不压代码，又能一眼看到是哪一行 */
+    if (gx >= bx0 && gx - bx0 < cw)
+      cvFill(&c, gx - bx0, 0, S(5), ch, 198, 58, 58, 245);
+
+    if (xl >= 0 && xr >= xl) {
+      int bx = xl - S(5), bw2;
+      if (g_codeX0 > 0 && bx > g_codeX0) bx = g_codeX0 - S(5);
+      if (bx < S(2)) bx = S(2);
+      if (bx < bx0) bx = bx0;
+      bw2 = bx1 - bx;
+      if (bw2 > cw - (bx - bx0)) bw2 = cw - (bx - bx0);
+      if (bw2 > 0) {
+        cvFill(&c, bx - bx0, 0, bw2, ch, 176, 52, 60, 88);            /* 淡底色 */
+        cvFill(&c, bx - bx0, 0, bw2, S(2), 176, 52, 60, 150);         /* 顶线 */
+        cvFill(&c, bx - bx0, ch - S(2), bw2, S(2), 176, 52, 60, 236); /* 底线 */
+      }
     } else {
       /* 空行：只给个很小的记号，不横跨整行 */
       int bx = g_codeX0 > 0 ? g_codeX0 : S(52);
       if (bx < S(2)) bx = S(2);
-      cvFill(&c, bx, bandY, S(14), bandH, 176, 52, 60, 55);
-      cvFill(&c, bx, bandY + bandH - S(2), S(14), S(2), 176, 52, 60, 190);
-      xl = bx;
+      if (bx < bx0) bx = bx0;
+      if (bx - bx0 + S(14) <= cw) {
+        cvFill(&c, bx - bx0, 0, S(14), ch, 176, 52, 60, 55);
+        cvFill(&c, bx - bx0, ch - S(2), S(14), S(2), 176, 52, 60, 190);
+      }
     }
   }
 
-  present(&c, g_hBand, g_edL, g_edT);
+  g_bandRelX = bx0;
+  g_bandRelY = bandY;
+  g_bandWinX = g_edL + bx0;
+  g_bandWinY = g_edT + bandY;
+  g_bandWinW = cw;
+  g_bandWinH = ch;
+  present(&c, g_hBand, g_bandWinX, g_bandWinY);
   cvFree(&c);
 }
 
@@ -1961,40 +2137,134 @@ static int textInkRight(void)
   return (g_codeX0 > 0 ? g_codeX0 : S(56)) + maxc * g_charW;
 }
 
+/* ---------------------------------------------- 绘制：编译结果面板上方的监测条 */
+
+static int g_memoStripH = 0;
+static int g_sigMemoH = -999, g_sigMemoL = -999, g_sigMemoT = -999;
+
+/* Dev-C++ 的编译日志区顶上盖一条 2 行的玻璃条：
+   第一行写“第几行 · 什么错”，第二行写原因/建议。
+   下面仍然是 Dev-C++ 自己的编译输出，不会被挡住。 */
+static void renderMemoStrip(void)
+{
+  Canvas c;
+  int w = g_memoR - g_memoL;
+  int h = g_memoB - g_memoT;
+  int P = S(9), y, x, tw, hHead, hBody, stripH;
+  WCHAR head[520], t[520];
+
+  if (w < S(160) || h < S(48)) { hideWindow(g_hMemoStrip); g_memoStripH = 0; return; }
+  /* 助手面板在右边时别画到它下面 */
+  if (g_panelL > g_memoL) {
+    int pl = g_panelL - g_memoL - S(8);
+    if (pl > S(160) && pl < w) w = pl;
+  }
+  stripH = S(64);
+  if (stripH > h - S(6)) stripH = h - S(6);
+  if (stripH < S(36)) stripH = S(36);
+  if (!cvCreate(&c, w, stripH)) return;
+
+  cvFill(&c, 0, 0, w, stripH, 255, 253, 248, 236);
+  cvFill(&c, 0, 0, S(5), stripH, 226, 100, 59, 255);
+  cvRect(&c, 0, 0, w, stripH, 34, 38, 42, 200);
+
+  if (!gd.on) { present(&c, g_hMemoStrip, g_memoL, g_memoT); cvFree(&c); g_memoStripH = stripH; return; }
+
+  hHead = textLineH(c.hdc, g_fHead);
+  hBody = textLineH(c.hdc, g_fBody);
+  x = S(9) + S(6);
+  tw = w - x - P;
+  if (tw < S(80)) tw = S(80);
+  y = P;
+
+  if (!wcscmp(gd.kind, L"busy")) {
+    copyEllipsis(c.hdc, g_fHead, gd.title[0] ? gd.title : L"正在编译…", tw, t, 400);
+    drawTextAt(&c, c.hdc, x, y, t, g_fHead, 34, 38, 42, 255);
+    copyEllipsis(c.hdc, g_fBody, L"小D 正在盯编译结果…", tw, t, 400);
+    drawTextAt(&c, c.hdc, x, y + hHead + S(2), t, g_fBody, 91, 97, 103, 255);
+  } else {
+    if (gd.ok)
+      wsprintfW(head, L"[通过] %s", gd.title[0] ? gd.title : L"编译通过");
+    else if (gd.line > 0)
+      wsprintfW(head, L"[错误] 第 %d 行 · %s", gd.line, gd.title[0] ? gd.title : L"编译失败");
+    else
+      wsprintfW(head, L"[错误] %s", gd.title[0] ? gd.title : L"编译失败");
+    head[400] = 0;
+    copyEllipsis(c.hdc, g_fHead, head, tw, t, 400);
+    drawTextAt(&c, c.hdc, x, y, t, g_fHead,
+               gd.ok ? 60 : 176, gd.ok ? 122 : 52, gd.ok ? 74 : 60, 255);
+
+    y += hHead + S(2);
+    if (y + hBody <= stripH - S(2)) {
+      const WCHAR *cause = gd.cause[0] ? gd.cause : (gd.where[0] ? gd.where : L"看下面的编译输出");
+      copyEllipsis(c.hdc, g_fBody, cause, tw, t, 400);
+      drawTextAt(&c, c.hdc, x, y, t, g_fBody, 34, 38, 42, 255);
+    }
+  }
+
+  present(&c, g_hMemoStrip, g_memoL, g_memoT);
+  g_memoStripH = stripH;
+  cvFree(&c);
+}
+
 static void layout(void)
 {
   int edW = g_edR - g_edL, edH = g_edB - g_edT;
   int line = gd.line;
-  int anchorY = S(10);
-  g_bandLineY = -1; g_bandLineH = 0;
+  g_bandLineY = -1; g_bandLineH = 0; g_bandFullRow = 0;
 
   if (line > 0) {
     int rel = line - g_topLine;
     int y, hh;
     int predY = g_firstTextY + rel * g_pitch - S(3);
-    /* 实测行范围必须和按行距推算的位置基本重合才采用；
-       否则（Dev-C++ 自带红标行把行切错、两行墨迹粘连）一律用推算位置，
-       保证色带永远压在正确的那一行上。 */
+    /* 实测行范围已经按“缩进 + 行尾长度”和源码逐字比对过，就是出错行本身，
+       只要位置没偏出两行就直接用它的真实上下沿，色带不会上下漂。 */
     int useMeasured = 0;
     if (g_targetRowTop >= 0 && rel >= 0 && g_targetRowBot >= g_targetRowTop) {
       int d = (g_targetRowTop - S(2)) - predY;
       if (d < 0) d = -d;
-      if (d <= g_pitch) useMeasured = 1;
+      if (d <= g_pitch * 2) useMeasured = 1;
     }
     if (useMeasured) {
-      /* 这一行的文字就在画面上，直接用它的真实上下沿，色带不会飘 */
-      int maxH = g_pitch - S(8);   /* 最多只占一行，避免两行墨迹粘连时色带变双倍高 */
-      y = g_targetRowTop - S(2);
-      hh = (g_targetRowBot - g_targetRowTop) + S(8);
-      if (maxH > S(12) && hh > maxH) hh = maxH;
+      /* 这一行的文字就在画面上：色带以它为中心，高度取一整行，
+         这样上下的位置和预测分支完全一致，不会忽大忽小 */
+      int mid = (g_targetRowTop + g_targetRowBot) / 2;
+      hh = g_pitch - S(2);
+      y = mid - hh / 2;
     } else {
       y = predY;
-      hh = g_pitch - S(3) + S(6);
+      hh = g_pitch - S(2);
+    }
+    /* 最可靠的做法：Dev-C++ 自己把出错行涂成红底/蓝底时，色带直接贴着
+       那一行的真实上下沿走，绝不靠行距推算，也就不会“标不到蓝行红行”。 */
+    if (rel >= 0 && g_colRowN > 0) {
+      int i, bestI = -1, bestD = 1 << 30;
+      int wantMid = y + hh / 2;
+      int rad = useMeasured ? g_pitch / 3 : g_pitch * 3 / 4;
+      for (i = 0; i < g_colRowN; i++) {
+        int mid = (g_colRowTop[i] + g_colRowBot[i]) / 2;
+        int d = mid - wantMid;
+        if (d < 0) d = -d;
+        if (d < bestD) { bestD = d; bestI = i; }
+      }
+      if (bestI >= 0 && bestD <= rad &&
+          (g_colRowBot[bestI] - g_colRowTop[bestI] + 1) >= g_pitch / 2) {
+        /* 太薄的一条（分割线/细边框之类）不算行高亮，别吸附上去 */
+        y = g_colRowTop[bestI] - S(1);
+        hh = (g_colRowBot[bestI] - g_colRowTop[bestI] + 1) + S(2);
+        g_bandFullRow = 1;
+      }
     }
     if (rel >= 0 && y >= 0 && y + hh <= edH + S(4)) {
+      /* 抖动抑制：和上次画的位置只差几个像素就沿用上次的值。
+         测量值每轮上下飘一两像素，会导致色带每 200ms 重绘一次，看起来一直在闪。 */
+      if (g_sigBandY >= 0 && abs(y - g_sigBandY) <= S(6) &&
+          abs(hh - g_sigBandH) <= S(6)) {
+        y = g_sigBandY;
+        hh = g_sigBandH;
+      }
       g_bandLineY = y;
       g_bandLineH = hh;
-      anchorY = y;
     }
   }
 
@@ -2031,6 +2301,9 @@ static void layout(void)
       /* 用户自己摆的位置：只夹在屏幕工作区内，不再自动贴代码 */
       g_stripX = g_cardX;
       g_stripY = g_cardY - stripH - S(6);
+    } else if (g_placed && g_stripX > 0) {
+      /* 位置已经自动摆过一次：这就是一个普通浮窗了。
+         不再每帧贴着代码/编辑区重算，Dev-C++ 挪动也不会被“粘”着走。 */
     } else {
       RECT hr;
       if (!GetWindowRect(g_hHost, &hr)) {
@@ -2039,15 +2312,19 @@ static void layout(void)
       x = hr.right + S(16);
       y = hr.top + S(64);
       if (x + colW > wa.right - S(8)) {
-        /* 屏幕右边放不下：贴到编辑区右侧内边 */
-        x = g_edR - colW - S(16);
+        /* 屏幕右边放不下：贴着“代码最右侧”往后放，尽量只压在空白处，
+           而不是压住右边一大片代码 */
+        int ink = g_inkRight > 0 ? g_inkRight : edW / 2;
+        x = g_edL + ink + S(24);
         if (x + colW > wa.right - S(8)) x = wa.right - S(8) - colW;
+        if (x < g_edL + S(8)) x = g_edL + S(8);
         if (x < wa.left + S(8)) x = wa.left + S(8);
       }
       if (y + totalH > wa.bottom - S(12)) y = wa.bottom - S(12) - totalH;
       if (y < wa.top + S(8)) y = wa.top + S(8);
       g_stripX = x;
       g_stripY = y;
+      g_placed = 1;   /* 只自动摆这一次，之后不再粘着代码 */
     }
 
     if (g_stripY < wa.top) g_stripY = wa.top;
@@ -2082,6 +2359,7 @@ static void hideAll(void)
   hideWindow(g_hBand);
   hideWindow(g_hStrip);
   hideWindow(g_hCard);
+  hideWindow(g_hMemoStrip);
 }
 
 /* Dev-C++ 正在运行程序时标题会带 [Executing]：这时控制台窗口会盖住编辑区，
@@ -2169,6 +2447,17 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
   g_hBand = mkLayered(1);
   g_hStrip = mkLayered(1);
   g_hCard = mkLayered(0);
+  g_hMemoStrip = mkLayered(1);
+  /* 三个窗口都从屏幕截图里排除掉：抓屏测量时就不用再藏一遍，
+     彻底消掉“每隔一会儿整个浮层闪一下”的现象 */
+  {
+    int a = excludeFromCapture(g_hBand);
+    int b = excludeFromCapture(g_hStrip);
+    int c = excludeFromCapture(g_hCard);
+    excludeFromCapture(g_hMemoStrip);
+    g_capExclOk = (a && b && c);
+    glog(L"capExcl=%d (%d,%d,%d)", g_capExclOk, a, b, c);
+  }
   lastWrite.dwLowDateTime = 0; lastWrite.dwHighDateTime = 0;
 
   while (1) {
@@ -2320,10 +2609,13 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
         /* 只有窗口尺寸变了、或者第一次测量，才允许改行距；
            单纯滚动/选中行变色引起的重测一律沿用已经量准的行距 */
         g_measureTrust = (sizeChanged || g_pitch <= S(8)) ? 1 : 0;
-        captureEditor();
-        measureLines();
         g_forceMeasure = 0;
+        captureEditor();
+        measureLines();   /* 抓空了会在里面重新置 g_forceMeasure，下一轮再试 */
         if (g_capFallback) { g_needDraw = 1; g_capFallback = 0; }
+        /* 窗口挪过位置就一定要重画：否则浮层还停在旧坐标上（色带“消失”就是这个） */
+        if (edL != lastEdL || edT != lastEdT || edR != lastEdR || edB != lastEdB)
+          g_needDraw = 1;
         lastEdL = edL; lastEdT = edT; lastEdR = edR; lastEdB = edB; lastTop = top;
       } else if (changedGeo) {
         lastEdL = edL; lastEdT = edT; lastEdR = edR; lastEdB = edB;
@@ -2349,6 +2641,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
         g_bandLineY != g_sigBandY || g_bandLineH != g_sigBandH ||
         g_cardX != g_sigCardX || g_cardY != g_sigCardY ||
         g_stripX != g_sigStripX || g_stripY != g_sigStripY ||
+        g_memoL != g_sigMemoL || g_memoT != g_sigMemoT ||
         g_collapsed != g_sigCollapsed) {
       if (!wcscmp(gd.kind, L"busy")) {
         hideWindow(g_hBand);
@@ -2359,6 +2652,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
         renderCard();
       }
       renderStrip();
+      renderMemoStrip();
       g_needDraw = 0;
       g_sigLine = gd.line;
       g_sigBandY = g_bandLineY;
@@ -2368,14 +2662,18 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       g_sigStripX = g_stripX;
       g_sigStripY = g_stripY;
       g_sigCollapsed = g_collapsed;
+      g_sigMemoH = g_memoStripH;
+      g_sigMemoL = g_memoL;
+      g_sigMemoT = g_memoT;
       lastLine = gd.line;
       lastTop = top;
       lastDrawn = 1;
     } else if (lastDrawn) {
-      /* 只跟随窗口移动 */
-      SetWindowPos(g_hBand, HWND_TOPMOST, edL, edT, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
-      SetWindowPos(g_hStrip, HWND_TOPMOST, g_stripX, g_stripY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
-      SetWindowPos(g_hCard, HWND_TOPMOST, g_cardX, g_cardY, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+      /* 只跟随窗口移动：色带按相对编辑区的偏移跟过去 */
+      moveIfMoved(g_hBand, g_edL + g_bandRelX, g_edT + g_bandRelY);
+      moveIfMoved(g_hStrip, g_stripX, g_stripY);
+      moveIfMoved(g_hCard, g_cardX, g_cardY);
+      moveIfMoved(g_hMemoStrip, g_memoL, g_memoT);
     }
 
     writeAlive();

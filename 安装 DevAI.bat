@@ -1,12 +1,12 @@
 @echo off
 chcp 936 >nul
-title DevAI °²×°Æ÷ - ×Ô¶¯¼ì²â Dev-C++
+title DevAI å®‰è£…å™¨ - è‡ªåŠ¨æ£€æµ‹ Dev-C++
 cd /d "%~dp0"
-echo ÕıÔÚÆô¶¯°²×°³ÌĞò£¬ÇëÉÔºò...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
+echo æ­£åœ¨å¯åŠ¨å®‰è£…ç¨‹åºï¼Œè¯·ç¨å€™...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" %*
 if errorlevel 1 (
   echo.
-  echo [DevAI] °²×°¹ı³Ì³ö´í£¬Çë°ÑÉÏÃæµÄĞÅÏ¢·´À¡¸ø¿ª·¢Õß¡£
+  echo [DevAI] å®‰è£…è¿‡ç¨‹å‡ºé”™ï¼Œè¯·æŠŠä¸Šé¢çš„ä¿¡æ¯åé¦ˆç»™å¼€å‘è€…ã€‚
   pause
 )
 exit
