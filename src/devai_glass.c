@@ -54,7 +54,7 @@ static int g_measScrollStable = 1;
    的绝对起点、顶部内边距、行距单位的影响，6.x 按行、7.x 按像素都能精确跟。 */
 static int g_ancLine = 0, g_ancPos = 0, g_ancValid = 0;
 
-static int g_collapsed = 0;   /* 讲解内容默认展开，点标题栏才折叠 */
+static int g_collapsed = 1;   /* 讲解内容默认折叠，点标题栏才展开 */
 static int g_cardHidden = 0;
 static int g_userDX = 0, g_userDY = 0;
 static int g_userMoved = 0;   /* 用户拖过：位置固定，不再自动贴代码 */
@@ -79,8 +79,6 @@ static int g_inkRight = 0;    /* 可见代码最右侧有字的 x（相对编辑
 static int g_lastCodeY = 0;   /* 可见代码最后一行的底部（相对编辑区） */
 static int g_panelL = 0, g_panelT = 0, g_panelB = 0;  /* 小助手浮窗的位置，卡片别压它 */
 static HWND g_hPanel = NULL;   /* 小助手浮窗句柄：位置真重合时，代码浮窗沉到它下面 */
-static int g_cardInk = 0;      /* 卡片横向基准：整份代码最长一行的右边界（稳定，不随画面抖） */
-static int g_inkSig = -1;      /* 上面那个基准是按哪份代码算的（内容指纹） */
 static char g_glassDoc[8192];   /* 缓存 json 原文 */
 
 static int g_codeX0 = 0;        /* 代码第 0 列的 x（相对编辑区） */
@@ -2761,18 +2759,30 @@ static int textInkRight(void)
   return (g_codeX0 > 0 ? g_codeX0 : S(56)) + maxc * g_charW;
 }
 
-/* 编辑器内容的轻量指纹：只用来判断“代码是不是真的变了”。
-   一样就说明这一轮测量到的位置抖动是噪声，卡片横向不动。 */
-static int inkSigOfText(void)
+/* 第 line 行（1 起）最后一个字符的右边界（相对编辑区 x）。
+   卡片就贴着这里往后一丁点 —— 放在行中间会挡住程序员看代码。 */
+static int lineInkRight(int line)
 {
-  unsigned h = 5381u;
-  int i, step;
-  if (g_editTextLen <= 0) return 0;
-  step = g_editTextLen / 96;
-  if (step < 1) step = 1;
-  for (i = 0; i < g_editTextLen; i += step)
-    h = h * 33u + (unsigned char)g_editText[i];
-  return (int)(h & 0x7fffffff) ^ g_editTextLen;
+  int i = 0, cur = 1, cols = 0;
+  int base = g_codeX0 > 0 ? g_codeX0 : S(56);
+  if (line <= 0 || g_editTextLen <= 0 || g_charW <= 0) return 0;
+  while (i < g_editTextLen && cur < line) {
+    if (g_editText[i] == '\n') cur++;
+    i++;
+  }
+  if (cur != line) return 0;
+  for (; i < g_editTextLen && g_editText[i] != '\n'; i++) {
+    unsigned char ch = (unsigned char)g_editText[i];
+    if (ch == '\r') continue;
+    if (ch == '\t') { cols += 4 - (cols % 4); continue; }
+    if (ch < 0x80) { cols += 1; continue; }
+    if ((ch & 0xE0) == 0xC0) { cols += 1; i += 1; continue; }
+    if ((ch & 0xF0) == 0xE0) { cols += 2; i += 2; continue; }
+    if ((ch & 0xF8) == 0xF0) { cols += 2; i += 3; continue; }
+    cols += 1;
+  }
+  if (cols <= 0) return 0;
+  return base + cols * g_charW;
 }
 
 static void layout(void)
@@ -2875,27 +2885,17 @@ static void layout(void)
       g_stripX = g_cardX;
       g_stripY = g_cardY - stripH - S(6);
     } else {
-      /* 代码浮窗跟着“标红的错行”走：贴在错行右手边的空白处。
-         横向基准只在「代码文本真的变了」时重算一次，平时一律锁死 ——
-         测量每帧都会抖几像素，跟着抖就是“乱飘”。 */
+      /* 代码浮窗贴着这一行「最后一个字符」往后一丁点：
+         既不会落在行中间挡住代码，也不会跑到很远的空白处。 */
       int bandTop = (g_bandLineY >= 0) ? (g_edT + g_bandLineY) : (g_edT + S(60));
-      int ink;
+      int lineR = lineInkRight(line);
       int xMax;
-      int sig = inkSigOfText();
-      static DWORD inkChk = 0;
-      if (g_cardInk <= 0 || sig != g_inkSig) {
+      if (lineR <= 0) {
         int t = textInkRight();
-        if (t > 0) { g_cardInk = t; g_inkSig = sig; }
-      } else if (GetTickCount() - inkChk > 1200) {
-        int t;
-        inkChk = GetTickCount();
-        t = textInkRight();
-        if (t > 0 && abs(t - g_cardInk) > S(120)) g_cardInk = t;  /* 换了字号之类的兜底 */
+        lineR = t > 0 ? t : edW / 2;
       }
-      ink = g_cardInk;
-      if (ink <= 0) ink = edW / 2;
-      if (ink > edW) ink = edW;
-      x = g_edL + ink + S(20);
+      if (lineR > edW) lineR = edW;
+      x = g_edL + lineR + S(12);
       y = bandTop - CS(10);
 
       /* 最多靠到编辑区右边，再往右就越出代码区了 */
@@ -3101,7 +3101,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
             g_needDraw = 1;
             g_forceMeasure = 1;
             g_userDX = g_userDY = 0;
-            /* 新的一次分析也保持展开：代码浮窗的讲解默认不折叠 */
+            g_collapsed = 1;   /* 新的一次分析：浮窗回到默认折叠 */
             g_cardHidden = 0;
             glog(L"json on=%d kind=%s ok=%d line=%d title=%s", gd.on, gd.kind, gd.ok, gd.line, gd.title);
           }
