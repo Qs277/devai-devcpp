@@ -78,6 +78,9 @@ static int g_cardHeadH = 0;   /* 点击标题栏才折叠/展开 */
 static int g_inkRight = 0;    /* 可见代码最右侧有字的 x（相对编辑区），卡片放它右边 */
 static int g_lastCodeY = 0;   /* 可见代码最后一行的底部（相对编辑区） */
 static int g_panelL = 0, g_panelT = 0, g_panelB = 0;  /* 小助手浮窗的位置，卡片别压它 */
+static HWND g_hPanel = NULL;   /* 小助手浮窗句柄：位置真重合时，代码浮窗沉到它下面 */
+static int g_cardInk = 0;      /* 卡片横向基准：整份代码最长一行的右边界（稳定，不随画面抖） */
+static int g_inkSig = -1;      /* 上面那个基准是按哪份代码算的（内容指纹） */
 static char g_glassDoc[8192];   /* 缓存 json 原文 */
 
 static int g_codeX0 = 0;        /* 代码第 0 列的 x（相对编辑区） */
@@ -619,6 +622,19 @@ static void loadData(void)
 
 /* ------------------------------------------------------------------ 窗口 */
 
+/* 代码浮窗（提示条/讲解卡）该插在谁后面：
+   和小助手浮窗有重合时，插到它后面 —— 宁可代码浮窗被压住，也不遮住面板。 */
+static HWND insertAfterFor(HWND h, int x, int y, int w, int hh)
+{
+  RECT pr;
+  if (h != g_hCard && h != g_hStrip) return HWND_TOPMOST;
+  if (!g_hPanel || !IsWindow(g_hPanel)) return HWND_TOPMOST;
+  if (!GetWindowRect(g_hPanel, &pr)) return HWND_TOPMOST;
+  if (x < pr.right && x + w > pr.left && y < pr.bottom && y + hh > pr.top)
+    return g_hPanel;
+  return HWND_TOPMOST;
+}
+
 static void present(Canvas *c, HWND h, int x, int y)
 {
   HDC screen = GetDC(NULL);
@@ -626,6 +642,7 @@ static void present(Canvas *c, HWND h, int x, int y)
   SIZE sz;
   BLENDFUNCTION bf;
   RECT cur;
+  HWND after;
   int needMove = 1;
   /* 位置和大小都没变就不要再 SetWindowPos：对 topmost 的 layered 窗口
      反复设置窗口位置会强制 DWM 重新合成，表现出来就是一直闪。 */
@@ -633,6 +650,7 @@ static void present(Canvas *c, HWND h, int x, int y)
       cur.left == x && cur.top == y &&
       (cur.right - cur.left) == c->w && (cur.bottom - cur.top) == c->h)
     needMove = 0;
+  after = insertAfterFor(h, x, y, c->w, c->h);
   dst.x = x; dst.y = y; src.x = 0; src.y = 0;
   sz.cx = c->w; sz.cy = c->h;
   bf.BlendOp = AC_SRC_OVER;
@@ -640,7 +658,7 @@ static void present(Canvas *c, HWND h, int x, int y)
   bf.SourceConstantAlpha = 255;
   bf.AlphaFormat = AC_SRC_ALPHA;
   if (needMove)
-    SetWindowPos(h, HWND_TOPMOST, x, y, c->w, c->h, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+    SetWindowPos(h, after, x, y, c->w, c->h, SWP_NOACTIVATE | SWP_NOOWNERZORDER);
   UpdateLayeredWindow(h, screen, &dst, &sz, c->hdc, &src, 0, &bf, ULW_ALPHA);
   ShowWindow(h, SW_SHOWNA);
   ReleaseDC(NULL, screen);
@@ -650,9 +668,15 @@ static void present(Canvas *c, HWND h, int x, int y)
 static void moveIfMoved(HWND h, int x, int y)
 {
   RECT cur;
+  HWND after;
+  int w, hh;
   if (!h || !IsWindowVisible(h)) return;
-  if (GetWindowRect(h, &cur) && cur.left == x && cur.top == y) return;
-  SetWindowPos(h, HWND_TOPMOST, x, y, 0, 0,
+  if (!GetWindowRect(h, &cur)) return;
+  w = cur.right - cur.left;
+  hh = cur.bottom - cur.top;
+  if (cur.left == x && cur.top == y) return;
+  after = insertAfterFor(h, x, y, w, hh);
+  SetWindowPos(h, after, x, y, 0, 0,
                SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 }
 
@@ -846,6 +870,7 @@ static BOOL CALLBACK enumTop(HWND h, LPARAM lp)
   if (wcsstr(title, L"DevAI")) {
     /* 小助手浮窗位置单独记下，卡片要避开它（它通常比主窗窄，不能受下面的尺寸过滤影响） */
     g_panelL = r.left; g_panelT = r.top; g_panelB = r.bottom;
+    g_hPanel = h;
     return TRUE;
   }
   /* 老版（6.x）主窗类是 TMainForm，新版（7.x，Lazarus 重写）是 TCustomForm，
@@ -1032,7 +1057,7 @@ static int locateWindows(void)
   g_best = NULL;
   g_bestArea = 0;
   g_bestHasEd = 0;
-  g_panelL = 0; g_panelT = 0; g_panelB = 0;
+  g_panelL = 0; g_panelT = 0; g_panelB = 0; g_hPanel = NULL;
   EnumWindows(enumTop, 0);
   if (!g_best) return 0;
   g_hHost = g_best;
@@ -2736,6 +2761,20 @@ static int textInkRight(void)
   return (g_codeX0 > 0 ? g_codeX0 : S(56)) + maxc * g_charW;
 }
 
+/* 编辑器内容的轻量指纹：只用来判断“代码是不是真的变了”。
+   一样就说明这一轮测量到的位置抖动是噪声，卡片横向不动。 */
+static int inkSigOfText(void)
+{
+  unsigned h = 5381u;
+  int i, step;
+  if (g_editTextLen <= 0) return 0;
+  step = g_editTextLen / 96;
+  if (step < 1) step = 1;
+  for (i = 0; i < g_editTextLen; i += step)
+    h = h * 33u + (unsigned char)g_editText[i];
+  return (int)(h & 0x7fffffff) ^ g_editTextLen;
+}
+
 static void layout(void)
 {
   int edW = g_edR - g_edL, edH = g_edB - g_edT;
@@ -2836,21 +2875,51 @@ static void layout(void)
       g_stripX = g_cardX;
       g_stripY = g_cardY - stripH - S(6);
     } else {
-      /* 代码浮窗跟着“标红的错行”走：贴在错行右侧的空白处，
-         右边放不下就贴着错行、纵向尽量靠近它，并且永远留在编辑区内。
-         以前只在第一帧摆一次，之后固定不动，还会跑到屏幕上方去。 */
+      /* 代码浮窗跟着“标红的错行”走：贴在错行右手边的空白处。
+         横向基准只在「代码文本真的变了」时重算一次，平时一律锁死 ——
+         测量每帧都会抖几像素，跟着抖就是“乱飘”。 */
       int bandTop = (g_bandLineY >= 0) ? (g_edT + g_bandLineY) : (g_edT + S(60));
-      int ink = g_inkRight > 0 ? g_inkRight : edW / 2;
-      x = g_edL + ink + S(24);
-      y = bandTop - CS(10);
-      if (x + colW > g_edR - S(8)) {
-        x = g_edR - S(8) - colW;   /* 右边没空白：整体往左收，别压到窗口外 */
+      int ink;
+      int xMax;
+      int sig = inkSigOfText();
+      static DWORD inkChk = 0;
+      if (g_cardInk <= 0 || sig != g_inkSig) {
+        int t = textInkRight();
+        if (t > 0) { g_cardInk = t; g_inkSig = sig; }
+      } else if (GetTickCount() - inkChk > 1200) {
+        int t;
+        inkChk = GetTickCount();
+        t = textInkRight();
+        if (t > 0 && abs(t - g_cardInk) > S(120)) g_cardInk = t;  /* 换了字号之类的兜底 */
       }
-      if (x < g_edL + S(8)) x = g_edL + S(8);
+      ink = g_cardInk;
+      if (ink <= 0) ink = edW / 2;
+      if (ink > edW) ink = edW;
+      x = g_edL + ink + S(20);
+      y = bandTop - CS(10);
+
+      /* 最多靠到编辑区右边，再往右就越出代码区了 */
+      xMax = g_edR - S(10) - colW;
+      if (xMax < g_edL + S(10)) xMax = g_edL + S(10);
+      if (x > xMax) x = xMax;
+
+      /* 不跟助手浮窗重合：它盖住的那段右边空白让出来 */
+      if (g_panelL > g_edL && g_panelB > g_edT && g_panelT < g_edB) {
+        int lim = g_panelL - S(12) - colW;
+        if (x > lim) x = lim;
+        if (x < g_edL + S(10)) x = g_edL + S(10);
+      }
       if (x + colW > wa.right - S(8)) x = wa.right - S(8) - colW;
       if (x < wa.left + S(8)) x = wa.left + S(8);
-      /* 纵向：先让浮窗顶边贴着错行，再夹进编辑区里（绝不出界） */
-      if (y + totalH > g_edB - S(8)) y = g_edB - S(8) - totalH;
+      /* 纵向：默认贴着错行往下排；下面放不下就整块挪到错行上面，
+         还是紧挨着这一行，而不是被夹到编辑区底部、看起来“飞到上面去了”。 */
+      if (y + totalH <= g_edB - S(8)) {
+        /* 贴在错行右侧往下排，正好 */
+      } else if (y - totalH >= g_edT + S(8)) {
+        y = y - totalH;            /* 放上面：整块底边贴着错行 */
+      } else {
+        y = g_edB - S(8) - totalH; /* 上面下面都挤不下：贴着编辑区底边 */
+      }
       if (y < g_edT + S(8)) y = g_edT + S(8);
       if (y + totalH > wa.bottom - S(12)) y = wa.bottom - S(12) - totalH;
       if (y < wa.top + S(8)) y = wa.top + S(8);
@@ -3032,7 +3101,7 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
             g_needDraw = 1;
             g_forceMeasure = 1;
             g_userDX = g_userDY = 0;
-            g_collapsed = 1;   /* 新的一次分析：浮窗默认折叠 */
+            /* 新的一次分析也保持展开：代码浮窗的讲解默认不折叠 */
             g_cardHidden = 0;
             glog(L"json on=%d kind=%s ok=%d line=%d title=%s", gd.on, gd.kind, gd.ok, gd.line, gd.title);
           }
@@ -3208,9 +3277,13 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
 
     layout();
     /* 位置平滑跟随：目标位置（g_cardY/g_stripY…）和实际画出去的位置不一样时，
-       每帧靠近 1/3，看起来是滑过去而不是瞬移。只挪位置，不重新算内容。 */
+       每帧靠近 1/3，看起来是滑过去而不是瞬移。只挪位置，不重新算内容。
+       跳得太远（换了错行/刚测量出真实行）就直接到位，否则会看到它从上一个位置
+       一路滑过去，看起来就是“先飞到上面再飘下来”。 */
     {
-      if (!g_curValid || g_dragging || g_resizing) {
+      if (!g_curValid || g_dragging || g_resizing ||
+          abs(g_cardY - g_curCardY) > S(160) || abs(g_stripY - g_curStripY) > S(160) ||
+          abs(g_cardX - g_curCardX) > S(200) || abs(g_stripX - g_curStripX) > S(200)) {
         g_curCardX = g_cardX; g_curCardY = g_cardY;
         g_curStripX = g_stripX; g_curStripY = g_stripY;
         g_curValid = 1;
