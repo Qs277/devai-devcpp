@@ -11,6 +11,7 @@ agent.pid
 
 # 编译中间产物
 build/
+dist/
 *.o
 *.obj
 

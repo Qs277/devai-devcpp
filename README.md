@@ -33,6 +33,14 @@
 
 ---
 
+## 中控台
+
+一个窗口管好所有东西：填 Key、扫版本、接入 / 还原、启动。纯 C + Win32 自绘，x64 / x86 两个版本。
+
+<img src="docs/center.png" alt="DevAI 中控台" width="100%"/>
+
+---
+
 ## 三个核心画面
 
 **① 编辑器上的玻璃层（主舞台）**
@@ -56,33 +64,37 @@
 
 ---
 
-## 安装（3 步，不会动你的代码）
+## 下载即用（单文件版，推荐）
 
-> 需要：Windows 10/11、[Dev-C++ 6.4 或 7.1](https://github.com/Embarcadero/Dev-Cpp)、[Node.js 18+](https://nodejs.org)
+> 需要：Windows 10/11、[Dev-C++ 6.4 或 7.1](https://github.com/Embarcadero/Dev-Cpp)
+> **不需要单独装 Node.js**——运行时已经打包在 exe 里。
 
-1. 下载 [Release 包](https://github.com/Qs277/devai-devcpp/releases/latest) 并解压到任意目录（**不要**解压到 C 盘根目录或中文路径下）；
+1. 到 [Release 页面](https://github.com/Qs277/devai-devcpp/releases/latest) 下载 **`DevAI-v1.1.0-x64.exe`**
+   （极老的 32 位系统用 `-x86`）；
+2. 双击运行。首次启动会把运行组件释放到 `%LOCALAPPDATA%\DevAI`，只需要几秒；
+3. 在中控台里：
+   - **模型设置**：填 API Key（DeepSeek 或任意 OpenAI 兼容接口），点「保存设置」；
+   - **Dev-C++**：会自动扫描本机所有版本，选一个点「一键接入」（也可以「浏览…」手动选目录）；
+   - **概览**：点「开始使用」，Dev-C++、助手服务和玻璃层会一起拉起来。
+
+第一次运行时中控台会请求管理员权限，用来替换 Dev-C++ 里的 `gcc / g++ / ConsolePauser`
+（原件会自动备份，随时可以在「Dev-C++」页点「移除接入」还原）。
+
+**绿色版**：把 `portable.txt` 放在 exe 旁边，数据就写到 `exe 所在目录\DevAI-Data`，不碰 `%LOCALAPPDATA%`。
+
+<details>
+<summary>不想用单文件版？用脚本方式安装也可以</summary>
+
+1. 下载源码包并解压到任意目录（**不要**解压到 C 盘根目录或中文路径下）；
 2. 双击 **`安装 DevAI.bat`**（右键 → 以管理员身份运行更稳）；
-3. 用开始菜单里生成的 **`Dev-C++ 智能版`** 快捷方式（或 `启动 Dev-C++ 智能版.bat`）打开 Dev-C++，然后在面板「设置」里填你自己的 API Key。
+3. 用开始菜单里生成的 **`Dev-C++ 智能版`** 快捷方式（或 `启动 Dev-C++ 智能版.bat`）打开 Dev-C++。
 
-> 电脑上装了多个 Dev-C++（6.4 + 7.1 共存）？
-> 安装器会自动扫描全部并逐个接好，只生成**一个**启动器；
-> 启动时弹窗让你选这次用哪个版本，配置与 API Key 共用一份。
-> 只想接指定的那一个：`安装 DevAI.bat -DevCppRoot "D:\某目录\Dev-Cpp"`。
-
-安装器会做这些事（每一步都会备份，可完整还原）：
-
-```
-检测本机 Dev-C++ 安装位置
-  └─ 备份原来的 gcc.exe / g++.exe / ConsolePauser.exe
-  └─ 放入拦截器 devai_gcc.exe / devai_gpp.exe / devai_console.exe
-  └─ 部署后台服务 server/ + 面板 + 玻璃层
-  └─ 生成启动器与安装状态（install-state.json）
-```
-
-默认安装到 `D:\devai`（没有 D 盘时自动落到 `%LOCALAPPDATA%\DevAI`），
-也可以用 `install.ps1 -DevAIHome "E:\tools\DevAI"` 指定任意路径。
+装了多个 Dev-C++（6.4 + 7.1 共存）？安装器会自动扫描全部并逐个接好，只生成**一个**启动器；
+只想接指定的那一个：`安装 DevAI.bat -DevCppRoot "D:\某目录\Dev-Cpp"`。
 
 卸载：双击 **`卸载 DevAI.bat`**，会把备份的原始编译器原样放回去。
+
+</details>
 
 ---
 
@@ -123,8 +135,11 @@ flowchart LR
 
 ## 常见问题
 
+**Q：需要自己装 Node.js 吗？**
+不用。单文件版已经内嵌了 Node 运行时和全部组件；只有用脚本方式安装时，才会去找系统里的 Node。
+
 **Q：装完打开 Dev-C++ 没反应？**
-先看右下角有没有小助手的托盘图标；没有就用「打开助手面板.bat」手动拉起，或检查 Node 是否在 PATH 里（安装器会把路径写进 `node_path.txt`）。
+先看右下角有没有小助手的托盘图标；没有就回到中控台点「开始使用」，或检查 `%LOCALAPPDATA%\DevAI\devai-install.log`。
 
 **Q：玻璃层不出现？**
 玻璃层只在 Dev-C++ 是当前窗口时显示；如果被最小化或被别的窗口挡住，它会自动收起。
@@ -147,9 +162,17 @@ flowchart LR
 
 ```
 devai-plugin/
+├─ src/
+│  ├─ devai_center.c    # 单文件版中控台（纯 C + Win32 自绘，x64 / x86 同一份源码）
+│  ├─ devai_cc.c        # 编译器拦截器（编译成 devai_gcc / devai_gpp）
+│  ├─ devai_console.c   # 运行拦截器
+│  ├─ devai_dock.c      # 面板宿主
+│  └─ devai_glass.c     # 透明玻璃层
+├─ res/                 # center.rc / 图标 / manifest
+├─ tools/
+│  ├─ build-release.ps1 # 一键产出 dist\DevAI-v1.1.0-x64.exe / -x86.exe
+│  └─ build-icon.ps1    # 生成多尺寸图标
 ├─ bin/                 # 拦截器、面板宿主、玻璃层（已编译好）
-├─ src/                 # devai_cc.c 编译器拦截 / devai_console.c 运行拦截
-│                       # devai_dock.c 面板宿主 / devai_glass.c 透明玻璃层
 ├─ server/
 │  ├─ server.js         # 零依赖 Node 服务（SSE + AI 编排 + 状态落盘）
 │  └─ ui/index.html     # 浮窗面板（单文件）
@@ -159,6 +182,9 @@ devai-plugin/
 ├─ 安装 DevAI.bat / 卸载 DevAI.bat
 └─ docs/banner.svg
 ```
+
+单文件版的原理：`payload.zip`（node.exe + 组件，Deflate 压缩后 33.5 MB）作为 RCDATA 资源编进 exe，
+首次运行用系统自带的 `tar.exe` 解包到数据目录，之后启动只做版本戳比对。
 
 ---
 

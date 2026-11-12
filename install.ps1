@@ -156,22 +156,24 @@ Write-Step '步骤 3/6  准备运行目录 ...'
 foreach ($d in @($DevAIHomeDir, (Join-Path $DevAIHomeDir 'queue'), (Join-Path $DevAIHomeDir 'state'), (Join-Path $DevAIHomeDir 'backup'), (Join-Path $DevAIHomeDir 'bin'), (Join-Path $DevAIHomeDir 'server'), (Join-Path $DevAIHomeDir 'server\ui'))) {
     if (-not (Test-Path $d)) { New-Item -ItemType Directory -Path $d -Force | Out-Null }
 }
-Copy-Item (Join-Path $PluginRoot 'server\server.js') (Join-Path $DevAIHomeDir 'server\server.js') -Force
-Copy-Item (Join-Path $PluginRoot 'server\ui\index.html') (Join-Path $DevAIHomeDir 'server\ui\index.html') -Force
-Copy-Item (Join-Path $PluginRoot 'bin\devai_gcc.exe') (Join-Path $DevAIHomeDir 'bin\devai_gcc.exe') -Force
-Copy-Item (Join-Path $PluginRoot 'bin\devai_gpp.exe') (Join-Path $DevAIHomeDir 'bin\devai_gpp.exe') -Force
-Copy-Item (Join-Path $PluginRoot 'bin\devai_console.exe') (Join-Path $DevAIHomeDir 'bin\devai_console.exe') -Force
-Copy-Item (Join-Path $PluginRoot 'bin\devai_dock.exe') (Join-Path $DevAIHomeDir 'bin\devai_dock.exe') -Force
-Copy-Item (Join-Path $PluginRoot 'bin\devai_glass.exe') (Join-Path $DevAIHomeDir 'bin\devai_glass.exe') -Force
-if (Test-Path (Join-Path $PluginRoot 'bin\open-panel.ps1')) {
-    Copy-Item (Join-Path $PluginRoot 'bin\open-panel.ps1') (Join-Path $DevAIHomeDir 'bin\open-panel.ps1') -Force
+# 单文件版里 PluginRoot 和 DevAIHomeDir 是同一个目录，跳过自我复制
+$sameRoot = ($PluginRoot -ieq $DevAIHomeDir)
+foreach ($rel in @('server\server.js','server\ui\index.html','bin\devai_gcc.exe','bin\devai_gpp.exe',
+                   'bin\devai_console.exe','bin\devai_dock.exe','bin\devai_glass.exe','bin\open-panel.ps1')) {
+    $src = Join-Path $PluginRoot $rel
+    $dst = Join-Path $DevAIHomeDir $rel
+    if ((Test-Path $src) -and ($src -ine $dst)) { Copy-Item $src $dst -Force }
 }
 Write-Ok "运行目录：$DevAIHomeDir（含窗口嵌入组件 devai_dock.exe / 玻璃浮层 devai_glass.exe）"
 
-# Node 路径
+# Node 路径：优先用内嵌的 node.exe（单文件版自带），再找系统安装的
 $nodePath = ''
-$cmd = Get-Command node -ErrorAction SilentlyContinue
-if ($cmd) { $nodePath = $cmd.Source }
+$bundledNode = Join-Path $DevAIHomeDir 'node.exe'
+if (Test-Path $bundledNode) { $nodePath = $bundledNode }
+if (-not $nodePath) {
+    $cmd = Get-Command node -ErrorAction SilentlyContinue
+    if ($cmd) { $nodePath = $cmd.Source }
+}
 if (-not $nodePath) {
     foreach ($p in @('E:\node.exe', "$env:ProgramFiles\nodejs\node.exe", "${env:ProgramFiles(x86)}\nodejs\node.exe")) {
         if (Test-Path $p) { $nodePath = $p; break }
@@ -179,8 +181,9 @@ if (-not $nodePath) {
 }
 if (-not $nodePath) {
     Write-Warn2 '没有检测到 Node.js！AI 助手需要 Node.js 才能运行。'
-    Write-Warn2 '请先安装 https://nodejs.org （一路下一步即可），然后重新运行本安装器。'
-    Read-Host '如果已经装在别处，请直接输入 node.exe 的完整路径（回车跳过）' | ForEach-Object { if ($_ -and (Test-Path $_)) { $script:nodePath = $_ } }
+    try {
+        Read-Host '如果已经装在别处，请直接输入 node.exe 的完整路径（回车跳过）' | ForEach-Object { if ($_ -and (Test-Path $_)) { $script:nodePath = $_ } }
+    } catch {}
 } else {
     Write-Ok "Node.js：$nodePath"
 }

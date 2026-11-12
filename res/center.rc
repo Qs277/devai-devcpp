@@ -1,0 +1,38 @@
+/* DevAI 中控台资源：图标 + 清单 + 内嵌组件包 */
+#include <windows.h>
+
+#define IDI_APP     101
+#define IDR_PAYLOAD 200
+
+IDI_APP ICON "devai.ico"
+1 24 "center.manifest"
+IDR_PAYLOAD RCDATA "payload.zip"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 1,1,0,0
+ PRODUCTVERSION 1,1,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404B0"
+        BEGIN
+            VALUE "CompanyName", "DevAI"
+            VALUE "FileDescription", "DevAI Control Center"
+            VALUE "FileVersion", "1.1.0"
+            VALUE "InternalName", "DevAI"
+            VALUE "LegalCopyright", "MIT License"
+            VALUE "OriginalFilename", "DevAI.exe"
+            VALUE "ProductName", "DevAI - XiaoD for Dev-C++"
+            VALUE "ProductVersion", "1.1.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END
