@@ -36,8 +36,8 @@
 #include <wchar.h>
 #include <math.h>
 
-#define APP_VER    L"1.1.0"
-#define APP_BUILD  L"1.1.0-1"
+#define APP_VER    L"1.1.1"
+#define APP_BUILD  L"1.1.1-1"
 
 #define IDI_APP     101
 #define IDR_PAYLOAD 200
@@ -768,7 +768,7 @@ static int payload_needs_extract(void)
     swprintf(stamp, ARRAYSZ(stamp), L"%ls\\build.txt", g_home);
     if (file_exists(p)) {
         if (read_file_utf8(stamp, &raw, NULL)) {
-            if (strcmp(raw, "1.1.0-1") == 0) need = 0;
+            if (strcmp(raw, "1.1.1-1") == 0) need = 0;
             free(raw);
         }
     }
