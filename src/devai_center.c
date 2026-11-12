@@ -43,20 +43,23 @@
 #define IDR_PAYLOAD 200
 
 /* ------------------------------------------------------------------ 颜色 */
-#define C_BG       RGB(13, 16, 22)
-#define C_SIDE     RGB(17, 22, 31)
-#define C_CARD     RGB(23, 30, 42)
-#define C_CARD_HI  RGB(29, 38, 53)
-#define C_BORDER   RGB(36, 46, 63)
-#define C_TEXT     RGB(233, 238, 247)
-#define C_SUB      RGB(140, 151, 171)
-#define C_DIM      RGB(94, 104, 122)
-#define C_ACCENT   RGB(84, 132, 255)
-#define C_ACCENT2  RGB(140, 98, 246)
-#define C_GREEN    RGB(56, 211, 154)
-#define C_RED      RGB(255, 112, 112)
-#define C_AMBER    RGB(245, 197, 81)
-#define C_INPUT    RGB(14, 19, 28)
+/* 浅色扁平纸面：白底 + 1px 细边 + 青/淡红两色强调，全部直角 */
+#define C_BG       RGB(245, 246, 247)
+#define C_SIDE     RGB(236, 238, 240)
+#define C_CARD     RGB(255, 255, 255)
+#define C_CARD_HI  RGB(240, 243, 245)
+#define C_BORDER   RGB(212, 216, 220)
+#define C_TEXT     RGB(26, 31, 35)
+#define C_SUB      RGB(92, 99, 105)
+#define C_DIM      RGB(134, 140, 146)
+#define C_ACCENT   RGB(14, 154, 167)
+#define C_ACCENT_D RGB(10, 122, 133)
+#define C_ACCENT2  RGB(224, 108, 99)
+#define C_TINT     RGB(226, 241, 243)
+#define C_GREEN    RGB(24, 138, 95)
+#define C_RED      RGB(198, 62, 58)
+#define C_AMBER    RGB(176, 122, 16)
+#define C_INPUT    RGB(255, 255, 255)
 #define C_WHITE    RGB(255, 255, 255)
 
 /* ------------------------------------------------------------------ 全局 */
@@ -1048,15 +1051,9 @@ static void fill_rect_c(HDC dc, RECT r, COLORREF c)
 
 static void fill_round(HDC dc, RECT r, int rad, COLORREF c)
 {
-    HBRUSH b = CreateSolidBrush(c);
-    HPEN p = CreatePen(PS_SOLID, 1, c);
-    HGDIOBJ ob = SelectObject(dc, b);
-    HGDIOBJ op = SelectObject(dc, p);
-    RoundRect(dc, r.left, r.top, r.right, r.bottom, rad, rad);
-    SelectObject(dc, ob);
-    SelectObject(dc, op);
-    DeleteObject(b);
-    DeleteObject(p);
+    /* 直角风格：忽略半径，统一填矩形 */
+    (void)rad;
+    fill_rect_c(dc, r, c);
 }
 
 static void stroke_round(HDC dc, RECT r, int rad, COLORREF c, int w)
@@ -1064,35 +1061,11 @@ static void stroke_round(HDC dc, RECT r, int rad, COLORREF c, int w)
     HPEN p = CreatePen(PS_SOLID, w, c);
     HGDIOBJ op = SelectObject(dc, p);
     HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
-    RoundRect(dc, r.left, r.top, r.right, r.bottom, rad, rad);
+    (void)rad;
+    Rectangle(dc, r.left, r.top, r.right, r.bottom);
     SelectObject(dc, op);
     SelectObject(dc, ob);
     DeleteObject(p);
-}
-
-static void fill_grad_round(HDC dc, RECT r, int rad, COLORREF c1, COLORREF c2, int vertical)
-{
-    TRIVERTEX v[2];
-    GRADIENT_RECT g;
-    int save = SaveDC(dc);
-    BeginPath(dc);
-    RoundRect(dc, r.left, r.top, r.right, r.bottom, rad, rad);
-    EndPath(dc);
-    SelectClipPath(dc, RGN_AND);
-    v[0].x = r.left; v[0].y = r.top;
-    v[0].Red = (COLOR16)(GetRValue(c1) << 8);
-    v[0].Green = (COLOR16)(GetGValue(c1) << 8);
-    v[0].Blue = (COLOR16)(GetBValue(c1) << 8);
-    v[0].Alpha = 0;
-    v[1].x = r.right; v[1].y = r.bottom;
-    v[1].Red = (COLOR16)(GetRValue(c2) << 8);
-    v[1].Green = (COLOR16)(GetGValue(c2) << 8);
-    v[1].Blue = (COLOR16)(GetBValue(c2) << 8);
-    v[1].Alpha = 0;
-    g.UpperLeft = 0;
-    g.LowerRight = 1;
-    GradientFill(dc, v, 2, &g, 1, vertical ? GRADIENT_FILL_RECT_V : GRADIENT_FILL_RECT_H);
-    RestoreDC(dc, save);
 }
 
 static void text_c(HDC dc, const wchar_t *s, RECT r, HFONT f, COLORREF c, UINT fmt)
@@ -1145,36 +1118,29 @@ static void button(HDC dc, int draw, int id, RECT r, const wchar_t *label, int k
     int hov = (g_hover == id);
     COLORREF bg, fg, bd;
     RECT rr = r;
-    int rad = SC(9);
+    int rad = 0;
 
-    if (kind == 0) {            /* primary */
-        bg = hov ? RGB(104, 148, 255) : C_ACCENT;
+    if (kind == 0 || kind == 3) {   /* primary */
+        bg = hov ? C_ACCENT_D : C_ACCENT;
         fg = C_WHITE;
         bd = bg;
-    } else if (kind == 1) {     /* secondary */
-        bg = hov ? C_CARD_HI : RGB(27, 35, 48);
+    } else if (kind == 1) {         /* secondary */
+        bg = hov ? C_CARD_HI : C_CARD;
         fg = C_TEXT;
+        bd = hov ? C_ACCENT : C_BORDER;
+    } else {                        /* ghost */
+        bg = hov ? C_TINT : C_CARD;
+        fg = hov ? C_ACCENT_D : C_SUB;
         bd = C_BORDER;
-    } else if (kind == 2) {     /* ghost */
-        bg = hov ? RGB(30, 39, 55) : C_CARD;
-        fg = C_SUB;
-        bd = C_BORDER;
-    } else {                    /* white on gradient */
-        bg = hov ? RGB(240, 244, 255) : C_WHITE;
-        fg = RGB(38, 40, 78);
-        bd = bg;
     }
     if (!enabled) {
-        bg = RGB(28, 34, 46);
-        fg = RGB(96, 106, 122);
-        bd = RGB(38, 46, 60);
+        bg = RGB(238, 240, 241);
+        fg = RGB(166, 171, 176);
+        bd = RGB(219, 222, 225);
     }
     if (draw) {
-        if (kind == 3) fill_round(dc, rr, rad, bg);
-        else {
-            fill_round(dc, rr, rad, bg);
-            stroke_round(dc, rr, rad, bd, 1);
-        }
+        fill_round(dc, rr, rad, bg);
+        stroke_round(dc, rr, rad, bd, 1);
         text_c(dc, label, rr, fBody, fg, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     hot(id, r);
@@ -1182,33 +1148,33 @@ static void button(HDC dc, int draw, int id, RECT r, const wchar_t *label, int k
 
 static void toggle(HDC dc, int draw, int id, RECT r, int on)
 {
-    int rad = (r.bottom - r.top) / 2;
+    /* 方形开关：轨道 + 方形滑块 */
     int pad = SC(3);
     int kd = (r.bottom - r.top) - pad * 2;
-    RECT knob;
+    RECT knob, track = r;
     if (draw) {
-        fill_round(dc, r, rad, on ? C_ACCENT : RGB(52, 62, 80));
+        fill_round(dc, track, 0, on ? C_ACCENT : RGB(206, 211, 215));
         if (on) {
             knob.left = r.right - pad - kd;
             knob.top = r.top + pad;
             knob.right = knob.left + kd;
             knob.bottom = r.bottom - pad;
-            fill_round(dc, knob, kd / 2, C_WHITE);
         } else {
             knob.left = r.left + pad;
             knob.top = r.top + pad;
             knob.right = knob.left + kd;
             knob.bottom = r.bottom - pad;
-            fill_round(dc, knob, kd / 2, C_SUB);
         }
+        fill_round(dc, knob, 0, C_WHITE);
+        stroke_round(dc, knob, 0, on ? C_WHITE : RGB(178, 184, 189), 1);
     }
     hot(id, r);
 }
 
 static void pill(HDC dc, RECT r, const wchar_t *label, COLORREF dotc, COLORREF txtc)
 {
-    int rad = (r.bottom - r.top) / 2;
-    fill_round(dc, r, rad, RGB(26, 34, 47));
+    fill_round(dc, r, 0, C_CARD);
+    stroke_round(dc, r, 0, C_BORDER, 1);
     if (dotc) dot(dc, r.left + SC(10), r.top + ((r.bottom - r.top) - SC(6)) / 2, SC(6), dotc);
     {
         RECT tr = r;
@@ -1227,10 +1193,10 @@ static void nav_icon(HDC dc, int kind, int x, int y, COLORREF c)
     int s = SC(16);
     switch (kind) {
     case 0:
-        RoundRect(dc, x, y, x + SC(7), y + SC(7), SC(3), SC(3));
-        RoundRect(dc, x + SC(9), y, x + SC(16), y + SC(7), SC(3), SC(3));
-        RoundRect(dc, x, y + SC(9), x + SC(7), y + SC(16), SC(3), SC(3));
-        RoundRect(dc, x + SC(9), y + SC(9), x + SC(16), y + SC(16), SC(3), SC(3));
+        Rectangle(dc, x, y, x + SC(7), y + SC(7));
+        Rectangle(dc, x + SC(9), y, x + SC(16), y + SC(7));
+        Rectangle(dc, x, y + SC(9), x + SC(7), y + SC(16));
+        Rectangle(dc, x + SC(9), y + SC(9), x + SC(16), y + SC(16));
         break;
     case 1:
         MoveToEx(dc, x + s / 2, y, NULL);
@@ -1244,7 +1210,7 @@ static void nav_icon(HDC dc, int kind, int x, int y, COLORREF c)
         LineTo(dc, x + s / 2, y);
         break;
     case 2:
-        RoundRect(dc, x, y + SC(2), x + s, y + s - SC(1), SC(3), SC(3));
+        Rectangle(dc, x, y + SC(2), x + s, y + s - SC(1));
         MoveToEx(dc, x, y + SC(6), NULL);
         LineTo(dc, x + s, y + SC(6));
         break;
@@ -1275,13 +1241,17 @@ static void nav_icon(HDC dc, int kind, int x, int y, COLORREF c)
 static void draw_sidebar(HDC dc, int draw)
 {
     RECT side = LR(0, 0, 208, 640);
-    if (draw) fill_rect_c(dc, side, C_SIDE);
+    RECT edge = LR(207, 0, 1, 640);
+    if (draw) {
+        fill_rect_c(dc, side, C_SIDE);
+        fill_rect_c(dc, edge, C_BORDER);
+    }
 
     if (draw && icoApp) {
-        DrawIconEx(dc, SC(24), SC(26), icoApp, SC(40), SC(40), 0, NULL, DI_NORMAL);
+        DrawIconEx(dc, SC(24), SC(24), icoApp, SC(40), SC(40), 0, NULL, DI_NORMAL);
     }
-    text_sz(dc, L"小D · DevAI", SC(76), SC(28), fTitle, C_TEXT);
-    text_sz(dc, L"Dev-C++ 智能助手", SC(76), SC(50), fSmall, C_DIM);
+    text_sz(dc, L"小D · DevAI", SC(76), SC(26), fTitle, C_TEXT);
+    text_sz(dc, L"Dev-C++ 智能助手", SC(76), SC(49), fSmall, C_DIM);
 
     {
         const wchar_t *names[P_COUNT] = { L"概览", L"模型设置", L"Dev-C++", L"高级", L"关于" };
@@ -1291,11 +1261,15 @@ static void draw_sidebar(HDC dc, int draw)
             int act = (g_page == i);
             int id = ID_NAV + i;
             if (draw) {
-                if (act) fill_round(dc, r, SC(10), RGB(30, 40, 57));
-                else if (g_hover == id) fill_round(dc, r, SC(10), RGB(24, 31, 43));
                 if (act) {
-                    RECT bar = LR(16, 112 + i * 46 + 11, 3, 18);
-                    fill_round(dc, bar, SC(2), C_ACCENT);
+                    fill_round(dc, r, 0, C_CARD);
+                    stroke_round(dc, r, 0, C_BORDER, 1);
+                } else if (g_hover == id) {
+                    fill_round(dc, r, 0, RGB(230, 233, 235));
+                }
+                if (act) {
+                    RECT bar = LR(16, 112 + i * 46, 3, 40);
+                    fill_round(dc, bar, 0, C_ACCENT);
                 }
                 nav_icon(dc, i, SC(34), SC(112 + i * 46 + 12), act ? C_ACCENT : C_SUB);
                 text_sz(dc, names[i], SC(64), SC(112 + i * 46 + 12), fNav, act ? C_TEXT : C_SUB);
@@ -1306,11 +1280,11 @@ static void draw_sidebar(HDC dc, int draw)
 
     if (draw) {
         /* 底部状态 */
-        COLORREF dc2 = g_serverUp ? C_GREEN : RGB(90, 100, 118);
+        COLORREF dc2 = g_serverUp ? C_GREEN : RGB(178, 184, 189);
         dot(dc, SC(26), SC(562), SC(7), dc2);
         text_sz(dc, g_serverUp ? L"助手服务运行中" : L"助手服务未启动", SC(40), SC(556), fSmall,
                 g_serverUp ? C_SUB : C_DIM);
-        text_sz(dc, L"v" APP_VER L" · MIT License", SC(26), SC(584), fSmall, RGB(74, 83, 98));
+        text_sz(dc, L"v" APP_VER L" · MIT License", SC(26), SC(584), fSmall, RGB(158, 164, 170));
     }
 }
 
@@ -1322,8 +1296,8 @@ static void draw_header(HDC dc, int draw, const wchar_t *title, const wchar_t *s
         if (showPill) {
             RECT pr = LR(760, 34, 152, 28);
             pill(dc, pr, g_serverUp ? L"服务运行中" : L"服务未启动",
-                 g_serverUp ? C_GREEN : RGB(90, 100, 118),
-                 g_serverUp ? RGB(180, 220, 205) : C_SUB);
+                 g_serverUp ? C_GREEN : RGB(178, 184, 189),
+                 g_serverUp ? C_GREEN : C_SUB);
         }
     }
 }
@@ -1333,15 +1307,24 @@ static void draw_overview(HDC dc, int draw)
     RECT hero = LR(236, 96, 676, 156);
     RECT btn;
     if (draw) {
-        fill_grad_round(dc, hero, SC(16), C_ACCENT, C_ACCENT2, 0);
-        text_sz(dc, L"让 Dev-C++ 会说人话", SC(268), SC(124), fH2, C_WHITE);
-        text_sz(dc, L"编译报错时，小D 直接在出错那一行讲清「为什么错 / 改哪里」", SC(268), SC(158), fBody,
-                RGB(232, 238, 255));
-        text_sz(dc, L"不用切窗口，不用翻日志。", SC(268), SC(183), fBody, RGB(214, 224, 255));
+        fill_rect_c(dc, hero, C_CARD);
+        stroke_round(dc, hero, 0, C_BORDER, 1);
+        /* 左侧青 / 淡红双色竖条，呼应图标 */
+        {
+            RECT b1, b2;
+            b1.left = hero.left; b1.right = hero.left + SC(5);
+            b1.top = hero.top; b1.bottom = (hero.top + hero.bottom) / 2;
+            b2 = b1; b2.top = b1.bottom; b2.bottom = hero.bottom;
+            fill_rect_c(dc, b1, C_ACCENT);
+            fill_rect_c(dc, b2, C_ACCENT2);
+        }
+        text_sz(dc, L"让 Dev-C++ 会说人话", SC(268), SC(124), fH2, C_TEXT);
+        text_sz(dc, L"编译报错时，小D 直接在出错那一行讲清「为什么错 / 改哪里」", SC(268), SC(158), fBody, C_SUB);
+        text_sz(dc, L"不用切窗口，不用翻日志。", SC(268), SC(183), fBody, C_DIM);
         if (icoBig) DrawIconEx(dc, SC(772), SC(118), icoBig, SC(96), SC(96), 0, NULL, DI_NORMAL);
     }
     btn = LR(268, 200, 132, 38);
-    button(dc, draw, ID_BTN_START, btn, L"开始使用", 3, !g_extracting);
+    button(dc, draw, ID_BTN_START, btn, L"开始使用", 0, !g_extracting);
 
     {
         const wchar_t *lab[3], *val[3], *hint[3];
@@ -1360,7 +1343,7 @@ static void draw_overview(HDC dc, int draw)
         val[1] = devtxt;
         val[2] = g_cfg.apiKey[0] ? g_cfg.model : L"未配置 Key";
         hint[0] = L"127.0.0.1"; hint[1] = L"6.4 / 7.1 都支持"; hint[2] = L"OpenAI 兼容接口";
-        dcs[0] = g_serverUp ? C_GREEN : RGB(90, 100, 118);
+        dcs[0] = g_serverUp ? C_GREEN : RGB(178, 184, 189);
         dcs[1] = (g_devCount > 0 && g_dev[0].integrated) ? C_GREEN : C_AMBER;
         dcs[2] = g_cfg.apiKey[0] ? C_GREEN : C_AMBER;
 
@@ -1407,7 +1390,8 @@ static void draw_overview(HDC dc, int draw)
                 RECT row = LR(256, y - 8, 636, 44);
                 if (draw) {
                     RECT circ = LR(264, y - 2, 26, 26);
-                    fill_round(dc, circ, SC(13), (i == 0 ? RGB(35, 48, 74) : RGB(32, 42, 60)));
+                    fill_round(dc, circ, 0, C_TINT);
+                    stroke_round(dc, circ, 0, C_ACCENT, 1);
                     {
                         wchar_t num[4];
                         swprintf(num, ARRAYSZ(num), L"%d", i + 1);
@@ -1439,18 +1423,26 @@ static void draw_model(HDC dc, int draw)
         text_sz(dc, L"兼容 DeepSeek / OpenAI / 各类中转站，Key 只保存在本机 config.json", SC(264), SC(134), fSmall, C_DIM);
 
         text_sz(dc, L"API 地址", SC(264), SC(160), fSmall, C_SUB);
-        text_sz(dc, L"API Key", SC(264), SC(210), fSmall, C_SUB);
+        text_sz(dc, L"API Key", SC(264), SC(216), fSmall, C_SUB);
         text_sz(dc, L"模型名", SC(264), SC(280), fSmall, C_SUB);
         text_sz(dc, L"温度", SC(564), SC(280), fSmall, C_SUB);
         text_sz(dc, L"最大回复长度", SC(714), SC(280), fSmall, C_SUB);
 
-        /* 输入框底 */
-        fill_round(dc, LR(264, 180, 620, 38), SC(9), C_INPUT);
-        fill_round(dc, LR(264, 230, 536, 38), SC(9), C_INPUT);
-        fill_round(dc, LR(800, 230, 84, 38), SC(9), C_INPUT);
-        fill_round(dc, LR(264, 300, 292, 38), SC(9), C_INPUT);
-        fill_round(dc, LR(564, 300, 140, 38), SC(9), C_INPUT);
-        fill_round(dc, LR(714, 300, 170, 38), SC(9), C_INPUT);
+        /* 输入框底：白底 + 细边 */
+        {
+            RECT ir[6];
+            int k;
+            ir[0] = LR(264, 176, 620, 38);
+            ir[1] = LR(264, 230, 536, 38);
+            ir[2] = LR(800, 230, 84, 38);
+            ir[3] = LR(264, 300, 292, 38);
+            ir[4] = LR(564, 300, 140, 38);
+            ir[5] = LR(714, 300, 170, 38);
+            for (k = 0; k < 6; k++) {
+                fill_round(dc, ir[k], 0, C_INPUT);
+                stroke_round(dc, ir[k], 0, C_BORDER, 1);
+            }
+        }
         text_c(dc, L"显示", LR(800, 230, 84, 38), fSmall, C_SUB, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
     hot(ID_BTN_SHOWKEY, LR(800, 230, 84, 38));
@@ -1514,24 +1506,22 @@ static void draw_devcpp(HDC dc, int draw)
         int id = ID_DEV_ROW + i;
         if (draw) {
             if (sel) {
-                fill_round(dc, row, SC(10), RGB(29, 40, 60));
-                stroke_round(dc, row, SC(10), RGB(52, 78, 122), 1);
+                fill_round(dc, row, 0, C_TINT);
+                stroke_round(dc, row, 0, C_ACCENT, 1);
             } else if (g_hover == id) {
-                fill_round(dc, row, SC(10), RGB(26, 33, 46));
+                fill_round(dc, row, 0, C_CARD_HI);
+            } else {
+                stroke_round(dc, row, 0, C_BORDER, 1);
             }
             {
+                /* 方形选择框 */
                 RECT cir = LR(268, 152 + i * 54 + 16, 18, 18);
-                HBRUSH b;
-                fill_round(dc, cir, SC(9), sel ? C_ACCENT : RGB(40, 48, 64));
+                fill_round(dc, cir, 0, C_WHITE);
+                stroke_round(dc, cir, 0, sel ? C_ACCENT : C_BORDER, 1);
                 if (sel) {
-                    b = CreateSolidBrush(C_WHITE);
-                    SelectObject(dc, b);
-                    {
-                        HGDIOBJ op = SelectObject(dc, GetStockObject(NULL_PEN));
-                        Ellipse(dc, cir.left + SC(6), cir.top + SC(6), cir.left + SC(12), cir.top + SC(12));
-                        SelectObject(dc, op);
-                    }
-                    DeleteObject(b);
+                    RECT in = cir;
+                    InflateRect(&in, -SC(5), -SC(5));
+                    fill_round(dc, in, 0, C_ACCENT);
                 }
             }
             {
@@ -1546,7 +1536,8 @@ static void draw_devcpp(HDC dc, int draw)
             }
             if (g_dev[i].integrated) {
                 RECT bg = LR(792, 152 + i * 54 + 14, 88, 22);
-                fill_round(dc, bg, SC(11), RGB(28, 54, 46));
+                fill_round(dc, bg, 0, RGB(226, 243, 236));
+                stroke_round(dc, bg, 0, RGB(184, 219, 203), 1);
                 text_c(dc, L"已接入", bg, fSmall, C_GREEN, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             }
         }
@@ -1586,7 +1577,8 @@ static void draw_adv(HDC dc, int draw)
         stroke_round(dc, c1, SC(14), C_BORDER, 1);
         text_sz(dc, L"助手服务", SC(264), SC(112), fTitle, C_TEXT);
         text_sz(dc, L"本地端口", SC(264), SC(140), fSmall, C_SUB);
-        fill_round(dc, LR(264, 158, 120, 38), SC(9), C_INPUT);
+        fill_round(dc, LR(264, 158, 120, 38), 0, C_INPUT);
+        stroke_round(dc, LR(264, 158, 120, 38), 0, C_BORDER, 1);
         text_sz(dc, L"只监听 127.0.0.1；被占用时会自动顺延到下一个端口", SC(404), SC(166), fSmall, C_DIM);
     }
     button(dc, draw, ID_BTN_SAVE_PORT, LR(788, 158, 96, 38), L"保存端口", 1, 1);
@@ -1623,7 +1615,7 @@ static void draw_about(HDC dc, int draw)
         text_sz(dc, L"v" APP_VER L"   单文件版", SC(354), SC(150), fBody, C_SUB);
         {
             RECT pr = LR(354, 174, 120, 24);
-            pill(dc, pr, L"MIT License", C_GREEN, RGB(170, 210, 195));
+            pill(dc, pr, L"MIT License", C_GREEN, C_GREEN);
         }
         text_sz(dc, L"给 Dev-C++ 贴一层会讲人话的玻璃。", SC(236), SC(238), fTitle, C_TEXT);
         text_sz(dc, L"编译报错时，小D 在出错那一行旁划线，用三个框讲清「为什么错 / 改哪里 / 记住什么」。", SC(236), SC(266), fBody, C_SUB);
@@ -1643,7 +1635,7 @@ static void layout_edits(void)
         g_editRc[i].left = g_editRc[i].top = g_editRc[i].right = g_editRc[i].bottom = 0;
         g_editPage[i] = -1;
     }
-    g_editRc[ED_BASE] = LR(276, 186, 596, 26);   g_editPage[ED_BASE] = P_MODEL;
+    g_editRc[ED_BASE] = LR(276, 182, 596, 26);   g_editPage[ED_BASE] = P_MODEL;
     g_editRc[ED_KEY] = LR(276, 236, 524, 26);    g_editPage[ED_KEY] = P_MODEL;
     g_editRc[ED_MODEL] = LR(276, 306, 268, 26);  g_editPage[ED_MODEL] = P_MODEL;
     g_editRc[ED_TEMP] = LR(576, 306, 116, 26);   g_editPage[ED_TEMP] = P_MODEL;
@@ -1706,8 +1698,8 @@ static void draw_all(HDC dc)
         int save = SaveDC(dc);
         RECT full;
         GetClientRect(g_hwnd, &full);
-        /* 半透明不清楚，直接压一层暗色 */
-        fill_rect_c(dc, full, RGB(11, 14, 20));
+        /* 半透明不清楚，直接压一层浅灰 */
+        fill_rect_c(dc, full, RGB(233, 236, 239));
         draw_marquee(dc);
         RestoreDC(dc, save);
     }
@@ -1719,8 +1711,8 @@ static void draw_all(HDC dc)
         tr.right = tr.left + tw;
         tr.bottom = client.bottom - SC(22);
         tr.top = tr.bottom - h;
-        fill_round(dc, tr, h / 2, RGB(34, 43, 60));
-        stroke_round(dc, tr, h / 2, RGB(52, 66, 88), 1);
+        fill_round(dc, tr, 0, C_CARD);
+        stroke_round(dc, tr, 0, C_BORDER, 1);
         text_c(dc, g_toast, tr, fBody, C_TEXT, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
     }
 }
@@ -1738,7 +1730,7 @@ static void draw_marquee(HDC dc)
     card.right = card.left + SC(460);
     card.bottom = card.top + ch;
     fill_round(dc, card, SC(18), C_CARD);
-    stroke_round(dc, card, SC(18), g_extractFailed ? RGB(92, 44, 52) : C_BORDER, 1);
+    stroke_round(dc, card, 0, g_extractFailed ? RGB(232, 196, 194) : C_BORDER, 1);
 
     cx = (card.left + card.right) / 2;
     cy = card.top + SC(52);
@@ -1755,7 +1747,7 @@ static void draw_marquee(HDC dc)
         SelectObject(dc, op);
         DeleteObject(p);
     } else {
-        HPEN p = CreatePen(PS_SOLID, SC(3), RGB(52, 66, 92));
+        HPEN p = CreatePen(PS_SOLID, SC(3), RGB(214, 218, 222));
         HPEN p2 = CreatePen(PS_SOLID, SC(3), C_ACCENT);
         HGDIOBJ op;
         op = SelectObject(dc, p);
@@ -2061,10 +2053,10 @@ static void apply_dark_title(HWND h)
         typedef HRESULT(WINAPI *PFN)(HWND, DWORD, LPCVOID, DWORD);
         PFN fn = (PFN)GetProcAddress(dwm, "DwmSetWindowAttribute");
         if (fn) {
-            BOOL dark = TRUE;
-            DWORD cap = RGB(13, 16, 22);
-            DWORD txt = RGB(233, 238, 247);
-            DWORD bd = RGB(36, 46, 63);
+            BOOL dark = FALSE;
+            DWORD cap = RGB(245, 246, 247);
+            DWORD txt = RGB(26, 31, 35);
+            DWORD bd = RGB(212, 216, 220);
             fn(h, 20, &dark, sizeof(dark));
             fn(h, 19, &dark, sizeof(dark));
             fn(h, 35, &cap, sizeof(cap));
