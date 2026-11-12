@@ -107,7 +107,6 @@ static int g_capExclOk = 0;
 static int g_sigLine = -999, g_sigBandY = -999, g_sigBandH = -999;
 static int g_sigBandVis = -1;   /* 上一帧画面上有没有标行 */
 static int g_bandVisible = 0;   /* 当前画面上有没有真的标出错误行 */
-static int g_cardVisible = 0;   /* 没标出行、但讲解卡仍然要显示（量不出行号时的兜底） */
 static int g_sigCardX = -999, g_sigCardY = -999, g_sigCollapsed = -1;
 static int g_sigStripX = -999, g_sigStripY = -999;
 static int g_bgR = 255, g_bgG = 255, g_bgB = 255;
@@ -3013,7 +3012,6 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
   FILETIME lastWrite;
   DWORD lastSize = 0;
   int lastTop = -999, lastLine = -999, lastDrawn = 0, lastScrollPos = -99999;
-  int lastCardVis = -1;
   int lastEdL = -99999, lastEdT = -99999, lastEdR = -99999, lastEdB = -99999;
   MSG msg;
 
@@ -3313,17 +3311,12 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       int okMode = gd.ok && wcscmp(gd.kind, L"busy") != 0;
       int bandOk = (gd.line > 0 && g_bandLineY >= 0 && !hostExecuting());
       g_bandVisible = okMode ? 0 : bandOk;
-      /* 兜底：抓屏量行号失败时（编辑区被别的窗口盖住、行号太浅），
-         g_bandLineY 会一直是 -1，以前就什么都不画，用户只看到“没反应”。
-         结果出来 1 秒还没标出行，就先把讲解卡放到编辑区里。 */
-      g_cardVisible = (!okMode && !bandOk && gd.line > 0 && !hostExecuting() &&
-                       gd.ts != 0 && (DWORD)(GetTickCount() - gd.ts) > 1000) ? 1 : 0;
     }
     /* !lastDrawn：窗口被收起过（切走/没找到 Dev-C++）就必须重画，
        否则 SetWindowPos 不会把隐藏窗口显示出来，浮层会一直不出现 */
     if (g_needDraw || !lastDrawn || gd.line != lastLine ||
         g_bandLineY != g_sigBandY || g_bandLineH != g_sigBandH ||
-        g_bandVisible != g_sigBandVis || g_cardVisible != lastCardVis ||
+        g_bandVisible != g_sigBandVis ||
         g_cardX != g_sigCardX || g_cardY != g_sigCardY ||
         g_stripX != g_sigStripX || g_stripY != g_sigStripY ||
         g_collapsed != g_sigCollapsed) {
@@ -3340,11 +3333,6 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
         renderBand();
         renderCard();
         renderStrip();
-      } else if (g_cardVisible) {
-        /* 量不出行：不画色带，但讲解卡照常出来 */
-        hideWindow(g_hBand);
-        renderCard();
-        renderStrip();
       } else {
         /* 没有标行就不显示代码浮窗 */
         hideWindow(g_hBand);
@@ -3356,7 +3344,6 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
       g_sigBandY = g_bandLineY;
       g_sigBandH = g_bandLineH;
       g_sigBandVis = g_bandVisible;
-      lastCardVis = g_cardVisible;
       g_sigCardX = g_cardX;
       g_sigCardY = g_cardY;
       g_sigStripX = g_stripX;

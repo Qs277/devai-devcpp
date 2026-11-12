@@ -1,4 +1,4 @@
-/*
+﻿/*
  * devai_center.c —— DevAI 小D 单文件中控台（纯 C + Win32 自绘）
  *
  * 一个 exe 干完这些事：
@@ -36,8 +36,8 @@
 #include <wchar.h>
 #include <math.h>
 
-#define APP_VER    L"1.1.2"
-#define APP_BUILD  L"1.1.2-1"
+#define APP_VER    L"1.1.3"
+#define APP_BUILD  L"1.1.3-1"
 
 #define IDI_APP     101
 #define IDR_PAYLOAD 200
@@ -768,7 +768,7 @@ static int payload_needs_extract(void)
     swprintf(stamp, ARRAYSZ(stamp), L"%ls\\build.txt", g_home);
     if (file_exists(p)) {
         if (read_file_utf8(stamp, &raw, NULL)) {
-            if (strcmp(raw, "1.1.2-1") == 0) need = 0;
+            if (strcmp(raw, "1.1.3-1") == 0) need = 0;
             free(raw);
         }
     }

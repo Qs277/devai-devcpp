@@ -69,7 +69,7 @@
 > 需要：Windows 10/11、[Dev-C++ 6.4 或 7.1](https://github.com/Embarcadero/Dev-Cpp)
 > **不需要单独装 Node.js**——运行时已经打包在 exe 里。
 
-1. 到 [Release 页面](https://github.com/Qs277/devai-devcpp/releases/latest) 下载 **`DevAI-v1.1.2-x64.exe`**
+1. 到 [Release 页面](https://github.com/Qs277/devai-devcpp/releases/latest) 下载 **`DevAI-v1.1.3-x64.exe`**
    （极老的 32 位系统用 `-x86`）；
 2. 双击运行。首次启动会把运行组件释放到 `%LOCALAPPDATA%\DevAI`，只需要几秒；
 3. 在中控台里：
@@ -170,7 +170,7 @@ devai-plugin/
 │  └─ devai_glass.c     # 透明玻璃层
 ├─ res/                 # center.rc / 图标 / manifest
 ├─ tools/
-│  ├─ build-release.ps1 # 一键产出 dist\DevAI-v1.1.2-x64.exe / -x86.exe
+│  ├─ build-release.ps1 # 一键产出 dist\DevAI-v1.1.3-x64.exe / -x86.exe
 │  └─ build-icon.ps1    # 生成多尺寸图标
 ├─ bin/                 # 拦截器、面板宿主、玻璃层（已编译好）
 ├─ server/

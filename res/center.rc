@@ -1,4 +1,4 @@
-/* DevAI 中控台资源：图标 + 清单 + 内嵌组件包 */
+﻿/* DevAI 中控台资源：图标 + 清单 + 内嵌组件包 */
 #include <windows.h>
 
 #define IDI_APP     101
@@ -23,12 +23,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "DevAI"
             VALUE "FileDescription", "DevAI Control Center"
-            VALUE "FileVersion", "1.1.2"
+            VALUE "FileVersion", "1.1.3"
             VALUE "InternalName", "DevAI"
             VALUE "LegalCopyright", "MIT License"
             VALUE "OriginalFilename", "DevAI.exe"
             VALUE "ProductName", "DevAI - XiaoD for Dev-C++"
-            VALUE "ProductVersion", "1.1.2"
+            VALUE "ProductVersion", "1.1.3"
         END
     END
     BLOCK "VarFileInfo"
