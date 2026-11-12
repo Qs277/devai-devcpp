@@ -3334,10 +3334,17 @@ int WINAPI wWinMain(HINSTANCE hi, HINSTANCE hp, LPWSTR cmd, int show)
         renderCard();
         renderStrip();
       } else {
-        /* 没有标行就不显示代码浮窗 */
+        /* 标不到行（抓屏量行号失败、错行滚出可视区）时不能把整块浮窗都收掉：
+           讲解卡/提示条本来就不依赖行号位置，照常显示出来，
+           否则用户看到的就是“浮窗彻底消失”。 */
         hideWindow(g_hBand);
-        hideWindow(g_hCard);
-        hideWindow(g_hStrip);
+        if (gd.on && gd.line > 0 && !hostExecuting()) {
+          renderCard();
+          renderStrip();
+        } else {
+          hideWindow(g_hCard);
+          hideWindow(g_hStrip);
+        }
       }
       g_needDraw = 0;
       g_sigLine = gd.line;

@@ -51,7 +51,7 @@ $libs = @('-lcomctl32','-lwinhttp','-lws2_32','-lshell32','-lole32','-lgdi32',
           '-luser32','-ladvapi32','-lmsimg32','-lcomdlg32','-ldwmapi','-lversion','-lshlwapi')
 $x64gcc = Join-Path $X64BIN 'gcc-real.exe'
 if (-not (Test-Path $x64gcc)) { $x64gcc = Join-Path $X64BIN 'gcc.exe' }
-$outX64 = Join-Path $dist 'DevAI-v1.1.3-x64.exe'
+$outX64 = Join-Path $dist 'DevAI-v1.1.4-x64.exe'
 & $x64gcc @cflags -o $outX64 'src\devai_center.c' (Join-Path $build 'center_x64.o') @libs
 if ($LASTEXITCODE -ne 0) { throw 'x64 编译失败' }
 Write-Host ("   {0} = {1:N1} MB" -f (Split-Path -Leaf $outX64), ((Get-Item $outX64).Length / 1MB))
@@ -59,7 +59,7 @@ Write-Host ("   {0} = {1:N1} MB" -f (Split-Path -Leaf $outX64), ((Get-Item $outX
 if (-not $SkipX86 -and $X86BIN) {
     Write-Host "== 4/5 编译 x86（i686）==" -ForegroundColor Cyan
     Build-Res $X86BIN (Join-Path $build 'center_x86.o')
-    $outX86 = Join-Path $dist 'DevAI-v1.1.3-x86.exe'
+    $outX86 = Join-Path $dist 'DevAI-v1.1.4-x86.exe'
     & (Join-Path $X86BIN 'gcc.exe') @cflags -o $outX86 'src\devai_center.c' (Join-Path $build 'center_x86.o') @libs
     if ($LASTEXITCODE -ne 0) { throw 'x86 编译失败' }
     Write-Host ("   {0} = {1:N1} MB" -f (Split-Path -Leaf $outX86), ((Get-Item $outX86).Length / 1MB))
@@ -76,7 +76,7 @@ if (-not $SkipX86 -and $X86BIN) {
         Enter-VsDevShell -VsInstallPath $vs -SkipAutomaticLocation -DevCmdArguments '-arch=x86 -host_arch=x64' | Out-Null
         Push-Location $root
         rc /nologo /I build /I res /fo (Join-Path $build 'center_x86_msvc.res') (Join-Path $resDir 'center.rc') | Out-Null
-        $outX86 = Join-Path $dist 'DevAI-v1.1.3-x86.exe'
+        $outX86 = Join-Path $dist 'DevAI-v1.1.4-x86.exe'
         cl /nologo /utf-8 /O2 /MT /D_CRT_SECURE_NO_WARNINGS 'src\devai_center.c' (Join-Path $build 'center_x86_msvc.res') `
            "/Fe:$outX86" /link /SUBSYSTEM:WINDOWS /MACHINE:X86 comctl32.lib winhttp.lib ws2_32.lib shell32.lib `
            ole32.lib gdi32.lib user32.lib advapi32.lib msimg32.lib comdlg32.lib dwmapi.lib version.lib shlwapi.lib | Out-Null

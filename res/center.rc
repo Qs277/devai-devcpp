@@ -23,12 +23,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "DevAI"
             VALUE "FileDescription", "DevAI Control Center"
-            VALUE "FileVersion", "1.1.3"
+            VALUE "FileVersion", "1.1.4"
             VALUE "InternalName", "DevAI"
             VALUE "LegalCopyright", "MIT License"
             VALUE "OriginalFilename", "DevAI.exe"
             VALUE "ProductName", "DevAI - XiaoD for Dev-C++"
-            VALUE "ProductVersion", "1.1.3"
+            VALUE "ProductVersion", "1.1.4"
         END
     END
     BLOCK "VarFileInfo"
