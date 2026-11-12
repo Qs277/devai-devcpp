@@ -24,6 +24,7 @@ _win.txt
 *.bmp
 *.png
 !docs/*.png
+!docs/shots/*.png
 
 # 系统
 Thumbs.db
